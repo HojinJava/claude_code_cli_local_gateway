@@ -30,8 +30,9 @@ class Worker:
         return [
             *self.config.claude_cmd,
             "-p",
-            "--input-format", "text",
-            "--output-format", "json",
+            "--input-format", "stream-json",
+            "--output-format", "stream-json",
+            "--verbose",
             "--no-session-persistence",
             "--tools", "",
             "--strict-mcp-config",
@@ -57,9 +58,13 @@ class Worker:
         if self._proc is None:
             raise WorkerError("worker not started")
         self.state = WorkerState.BUSY
+        message = json.dumps({
+            "type": "user",
+            "message": {"role": "user", "content": prompt},
+        }) + "\n"
         try:
             stdout_data, stderr_data = await asyncio.wait_for(
-                self._proc.communicate(input=prompt.encode("utf-8")),
+                self._proc.communicate(input=message.encode("utf-8")),
                 timeout=timeout_sec,
             )
         except asyncio.TimeoutError:
@@ -73,14 +78,27 @@ class Worker:
                 f"worker exited with code {self._proc.returncode}: "
                 f"{stderr_data.decode('utf-8', errors='replace')}"
             )
-        try:
-            payload = json.loads(stdout_data.decode("utf-8"))
-        except json.JSONDecodeError as exc:
-            raise WorkerError(f"invalid worker output: {exc}") from exc
+
+        result_line = None
+        for line in stdout_data.decode("utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("type") == "result":
+                result_line = payload
+                break
+
+        if result_line is None:
+            raise WorkerError("no 'result' line found in worker stream-json output")
+
         return {
-            "text": payload.get("result", ""),
-            "duration_ms": payload.get("duration_ms", 0),
-            "is_error": bool(payload.get("is_error", False)),
+            "text": result_line.get("result", ""),
+            "duration_ms": result_line.get("duration_ms", 0),
+            "is_error": bool(result_line.get("is_error", False)),
         }
 
     async def kill(self) -> None:

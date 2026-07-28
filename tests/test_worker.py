@@ -59,3 +59,13 @@ async def test_run_raises_timeout_and_kills_process(tmp_path):
     with pytest.raises(asyncio.TimeoutError):
         await worker.run("hello", timeout_sec=0.2)
     assert not worker.is_alive()
+
+
+async def test_build_argv_uses_stream_json_protocol(tmp_path):
+    worker = Worker(make_config(tmp_path, "--fake-mode", "echo"))
+    argv = worker._build_argv()
+    assert "--input-format" in argv
+    assert argv[argv.index("--input-format") + 1] == "stream-json"
+    assert "--output-format" in argv
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in argv
