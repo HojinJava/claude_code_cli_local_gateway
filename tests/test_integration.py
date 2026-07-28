@@ -6,21 +6,20 @@ from pathlib import Path
 import pytest
 
 from claude_pool.config import PoolConfig
-from claude_pool.pool import WorkerPool
 from claude_pool.server import create_app
 from claude_pool.worker import Worker
 
 FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude_cli.py"
 
 
-async def test_concurrent_requests_do_not_bleed_context(aiohttp_client, tmp_path):
+async def test_concurrent_requests_do_not_bleed_context(aiohttp_client, tmp_path, make_pool):
     config = PoolConfig(
         min_workers=2,
         max_workers=4,
         scratch_dir=tmp_path,
         claude_cmd=[sys.executable, str(FAKE_CLI), "--fake-mode", "echo"],
     )
-    pool = WorkerPool(config)
+    pool = make_pool(config)
     await pool.start()
     app = create_app(pool)
     client = await aiohttp_client(app)
@@ -30,11 +29,13 @@ async def test_concurrent_requests_do_not_bleed_context(aiohttp_client, tmp_path
         *[client.post("/generate", json={"prompt": p}) for p in prompts]
     )
     bodies = await asyncio.gather(*[r.json() for r in responses])
-    returned_texts = {b["text"] for b in bodies}
-    assert returned_texts == set(prompts)
+    # Strict per-index comparison: asyncio.gather preserves input order, so a
+    # set comparison would still pass if two responses were swapped between
+    # requests — exactly the bleed this test exists to catch.
+    assert [b["text"] for b in bodies] == prompts
 
 
-async def test_burst_scales_up_and_idle_scales_back_down(aiohttp_client, tmp_path):
+async def test_burst_scales_up_and_idle_scales_back_down(aiohttp_client, tmp_path, make_pool):
     config = PoolConfig(
         min_workers=1,
         max_workers=4,
@@ -43,7 +44,7 @@ async def test_burst_scales_up_and_idle_scales_back_down(aiohttp_client, tmp_pat
         idle_timeout_sec=0.2,
         scale_down_interval_sec=0.1,
     )
-    pool = WorkerPool(config)
+    pool = make_pool(config)
     await pool.start()
     app = create_app(pool)
     client = await aiohttp_client(app)

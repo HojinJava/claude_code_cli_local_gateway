@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 
 from claude_pool.config import PoolConfig
-from claude_pool.pool import WorkerPool
 from claude_pool.server import create_app
 
 FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude_cli.py"
@@ -23,8 +22,8 @@ def make_config(tmp_path, **overrides):
 
 
 @pytest.fixture
-async def client(aiohttp_client, tmp_path):
-    pool = WorkerPool(make_config(tmp_path))
+async def client(aiohttp_client, tmp_path, make_pool):
+    pool = make_pool(make_config(tmp_path))
     await pool.start()
     app = create_app(pool)
     return await aiohttp_client(app)
@@ -59,13 +58,34 @@ async def test_health_reports_pool_stats(client):
     assert "idle" in data and "busy" in data
 
 
-async def test_generate_surfaces_worker_error(aiohttp_client, tmp_path):
-    pool = WorkerPool(make_config(tmp_path, claude_cmd=[sys.executable, str(FAKE_CLI), "--fake-mode", "crash"]))
+async def test_generate_surfaces_worker_error(aiohttp_client, tmp_path, make_pool):
+    pool = make_pool(make_config(tmp_path, claude_cmd=[sys.executable, str(FAKE_CLI), "--fake-mode", "crash"]))
     await pool.start()
     app = create_app(pool)
     client = await aiohttp_client(app)
     resp = await client.post("/generate", json={"prompt": "hello"})
     assert resp.status == 502
+    data = await resp.json()
+    assert "error" in data
+
+
+async def test_generate_returns_503_when_no_worker_can_be_acquired(
+    aiohttp_client, tmp_path, make_pool
+):
+    pool = make_pool(
+        make_config(
+            tmp_path,
+            min_workers=0,
+            max_workers=1,
+            acquire_timeout_sec=2.0,
+            claude_cmd=["claude-pool-no-such-binary-xyz"],
+        )
+    )
+    await pool.start()
+    app = create_app(pool)
+    client = await aiohttp_client(app)
+    resp = await client.post("/generate", json={"prompt": "hello"})
+    assert resp.status == 503
     data = await resp.json()
     assert "error" in data
 

@@ -57,3 +57,24 @@ def test_client_health_reports_stats(running_daemon):
 def test_client_raises_on_missing_daemon_when_auto_start_disabled():
     with pytest.raises(Exception):
         ClaudePoolClient(port=1, auto_start=False).health()
+
+
+def test_auto_start_passes_client_host_and_port_to_daemon(monkeypatch, unused_tcp_port):
+    captured: dict = {}
+
+    def fake_popen(argv, **kwargs):
+        captured["argv"] = argv
+        captured["env"] = kwargs["env"]
+        raise _StopStartup
+
+    monkeypatch.setattr("claude_pool.client.subprocess.Popen", fake_popen)
+    with pytest.raises(_StopStartup):
+        ClaudePoolClient(port=unused_tcp_port, auto_start=True, start_timeout_sec=0.1)
+
+    assert captured["argv"][1:] == ["-m", "claude_pool.daemon"]
+    assert captured["env"]["CLAUDE_POOL_PORT"] == str(unused_tcp_port)
+    assert captured["env"]["CLAUDE_POOL_HOST"] == "127.0.0.1"
+
+
+class _StopStartup(Exception):
+    """Aborts __init__ right after the spawn so no daemon is actually launched."""

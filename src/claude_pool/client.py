@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -35,11 +36,17 @@ class ClaudePoolClient:
             return False
 
     def _start_daemon(self) -> None:
+        # The daemon reads PoolConfig.from_env(), so it only binds where this
+        # client expects if we hand it this client's own host and port.
+        env = dict(os.environ)
+        env["CLAUDE_POOL_HOST"] = self.host
+        env["CLAUDE_POOL_PORT"] = str(self.port)
         kwargs: dict = dict(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             close_fds=True,
+            env=env,
         )
         if sys.platform == "win32":
             kwargs["creationflags"] = (

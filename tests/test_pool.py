@@ -3,11 +3,14 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 from claude_pool.config import PoolConfig
-from claude_pool.pool import WorkerPool
+from claude_pool.pool import PoolUnavailableError, WorkerPool
 from claude_pool.worker import Worker, WorkerState
 
 FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude_cli.py"
+MISSING_BINARY = ["claude-pool-no-such-binary-xyz"]
 
 
 def make_config(tmp_path, **overrides):
@@ -23,8 +26,8 @@ def make_config(tmp_path, **overrides):
     return PoolConfig(**defaults)
 
 
-async def test_start_primes_min_workers(tmp_path):
-    pool = WorkerPool(make_config(tmp_path))
+async def test_start_primes_min_workers(tmp_path, make_pool):
+    pool = make_pool(make_config(tmp_path))
     await pool.start()
     stats = pool.stats()
     assert stats["total"] == 2
@@ -32,8 +35,8 @@ async def test_start_primes_min_workers(tmp_path):
     assert stats["busy"] == 0
 
 
-async def test_acquire_and_release_serves_one_request_then_replenishes(tmp_path):
-    pool = WorkerPool(make_config(tmp_path))
+async def test_acquire_and_release_serves_one_request_then_replenishes(tmp_path, make_pool):
+    pool = make_pool(make_config(tmp_path))
     await pool.start()
 
     worker = await pool.acquire()
@@ -47,8 +50,8 @@ async def test_acquire_and_release_serves_one_request_then_replenishes(tmp_path)
     assert stats["busy"] == 0
 
 
-async def test_acquire_beyond_idle_capacity_grows_and_waits(tmp_path):
-    pool = WorkerPool(make_config(tmp_path, min_workers=1, max_workers=3))
+async def test_acquire_beyond_idle_capacity_grows_and_waits(tmp_path, make_pool):
+    pool = make_pool(make_config(tmp_path, min_workers=1, max_workers=3))
     await pool.start()
 
     w1 = await pool.acquire()  # consumes the only idle worker, triggers growth
@@ -60,8 +63,8 @@ async def test_acquire_beyond_idle_capacity_grows_and_waits(tmp_path):
     await pool.release(w2)
 
 
-async def test_acquire_never_exceeds_max_workers(tmp_path):
-    pool = WorkerPool(make_config(tmp_path, min_workers=1, max_workers=2))
+async def test_acquire_never_exceeds_max_workers(tmp_path, make_pool):
+    pool = make_pool(make_config(tmp_path, min_workers=1, max_workers=2))
     await pool.start()
 
     acquired = [await pool.acquire(), await pool.acquire()]
@@ -80,8 +83,8 @@ async def test_acquire_never_exceeds_max_workers(tmp_path):
     await pool.release(acquired[1])
 
 
-async def test_scale_down_shrinks_idle_workers_back_to_min(tmp_path):
-    pool = WorkerPool(make_config(tmp_path, min_workers=1, max_workers=3))
+async def test_scale_down_shrinks_idle_workers_back_to_min(tmp_path, make_pool):
+    pool = make_pool(make_config(tmp_path, min_workers=1, max_workers=3))
     await pool.start()
 
     w1 = await pool.acquire()  # forces growth to 2 total
@@ -100,14 +103,14 @@ async def test_scale_down_shrinks_idle_workers_back_to_min(tmp_path):
     assert pool.stats()["idle"] == pool.config.min_workers
 
 
-async def test_scale_down_loop_kills_only_expired_excess_idle_workers(tmp_path):
+async def test_scale_down_loop_kills_only_expired_excess_idle_workers(tmp_path, make_pool):
     # Sequential acquire()/release() can never leave more than min_workers
     # workers sitting in self._idle at once in this one-shot worker model
     # (see test_scale_down_shrinks_idle_workers_back_to_min above, which
     # passes identically whether or not the scale-down loop exists). To
     # actually prove the sweep trims excess idle workers, seed self._idle
     # directly with pre-expired workers instead of relying on timing.
-    pool = WorkerPool(
+    pool = make_pool(
         make_config(
             tmp_path,
             min_workers=2,
@@ -142,3 +145,113 @@ async def test_scale_down_loop_kills_only_expired_excess_idle_workers(tmp_path):
     for w in originals:
         assert w.state == WorkerState.IDLE
         assert w in pool._idle
+
+
+async def test_release_kills_worker_whose_run_was_cancelled(tmp_path, make_pool):
+    # A client disconnect cancels the handler mid-run; unwinding out of
+    # communicate() does NOT kill the subprocess, so release() must.
+    pool = make_pool(
+        make_config(
+            tmp_path,
+            min_workers=1,
+            claude_cmd=[
+                sys.executable, str(FAKE_CLI),
+                "--fake-mode", "echo", "--fake-delay-sec", "5.0",
+            ],
+        )
+    )
+    await pool.start()
+
+    worker = await pool.acquire()
+    run = asyncio.ensure_future(worker.run("hi", timeout_sec=30.0))
+    await asyncio.sleep(0.3)
+    run.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await run
+
+    assert worker.is_alive()  # cancellation alone leaves it running
+    await pool.release(worker)
+    assert not worker.is_alive()
+
+
+async def test_acquire_discards_dead_idle_workers(tmp_path, make_pool):
+    pool = make_pool(make_config(tmp_path, min_workers=2, max_workers=4))
+    await pool.start()
+
+    dead = pool._idle[0]
+    await dead.kill()
+    assert not dead.is_alive()
+
+    worker = await pool.acquire()
+    assert worker is not dead
+    assert worker.is_alive()
+    assert pool.stats()["total"] == 1  # the dead one was discarded, not handed out
+
+    await pool.release(worker)
+
+
+async def test_acquire_fails_fast_when_worker_spawn_fails(tmp_path, make_pool):
+    pool = make_pool(
+        make_config(tmp_path, min_workers=0, max_workers=2, claude_cmd=MISSING_BINARY)
+    )
+    await pool.start()
+
+    # The outer wait_for is the safety net: before the fix this hung forever.
+    with pytest.raises(PoolUnavailableError):
+        await asyncio.wait_for(pool.acquire(), timeout=5.0)
+
+
+async def test_acquire_times_out_when_pool_is_exhausted(tmp_path, make_pool):
+    pool = make_pool(
+        make_config(tmp_path, min_workers=1, max_workers=1, acquire_timeout_sec=0.3)
+    )
+    await pool.start()
+
+    held = await pool.acquire()
+    with pytest.raises(PoolUnavailableError):
+        await pool.acquire()
+    await pool.release(held)
+
+
+async def test_release_never_propagates_a_failed_replenish(tmp_path, make_pool):
+    pool = make_pool(make_config(tmp_path, min_workers=1, max_workers=2))
+    await pool.start()
+    worker = await pool.acquire()
+
+    pool.config.claude_cmd = MISSING_BINARY
+    await pool.release(worker)  # must not raise into the caller's finally block
+
+    assert pool.stats()["total"] == 0
+
+
+async def test_stop_kills_idle_workers_and_cancels_scale_down_loop(tmp_path):
+    pool = WorkerPool(make_config(tmp_path, min_workers=2))
+    await pool.start()
+    idle_workers = list(pool._idle)
+    assert all(w.is_alive() for w in idle_workers)
+
+    await pool.stop()
+
+    assert all(not w.is_alive() for w in idle_workers)
+    assert pool.stats()["total"] == 0
+    assert pool._scale_down_task is None
+
+
+async def test_stop_wakes_parked_acquire_waiters(tmp_path):
+    # acquire_timeout_sec is deliberately long: a pass here must come from
+    # stop() waking the waiter, not from the timeout backstop firing.
+    pool = WorkerPool(
+        make_config(tmp_path, min_workers=1, max_workers=1, acquire_timeout_sec=30.0)
+    )
+    await pool.start()
+    held = await pool.acquire()
+
+    waiter = asyncio.ensure_future(pool.acquire())
+    await asyncio.sleep(0.1)
+    assert not waiter.done()
+
+    await pool.stop()
+    with pytest.raises(PoolUnavailableError):
+        await asyncio.wait_for(waiter, timeout=2.0)
+
+    await pool.release(held)

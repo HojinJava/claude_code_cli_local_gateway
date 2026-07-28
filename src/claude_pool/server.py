@@ -5,7 +5,7 @@ import json
 
 from aiohttp import web
 
-from .pool import WorkerPool
+from .pool import PoolUnavailableError, WorkerPool
 from .worker import WorkerError
 
 
@@ -36,7 +36,11 @@ async def handle_generate(request: web.Request) -> web.Response:
     except (ValueError, TypeError):
         return web.json_response({"error": "'timeout_sec' must be numeric"}, status=400)
 
-    worker = await pool.acquire()
+    try:
+        worker = await pool.acquire()
+    except PoolUnavailableError as exc:
+        return web.json_response({"error": str(exc)}, status=503)
+
     try:
         result = await worker.run(prompt, timeout_sec=timeout_sec)
     except asyncio.TimeoutError:
@@ -44,7 +48,10 @@ async def handle_generate(request: web.Request) -> web.Response:
     except WorkerError as exc:
         return web.json_response({"error": str(exc)}, status=502)
     finally:
-        await pool.release(worker)
+        # Detached and shielded so that cancelling this handler (client
+        # disconnect, shutdown) still runs the release — and therefore the
+        # worker kill — to completion under the pool's own task tracking.
+        await asyncio.shield(pool.release_in_background(worker))
 
     if result["is_error"]:
         return web.json_response({"error": result["text"]}, status=502)
