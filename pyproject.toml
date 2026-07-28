@@ -1,0 +1,27 @@
+[project]
+name = "claude-pool"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-aiohttp>=1.0",
+]
+
+[project.scripts]
+claude-pool-daemon = "claude_pool.daemon:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
