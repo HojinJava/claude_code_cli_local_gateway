@@ -64,7 +64,7 @@ sequenceDiagram
 
 각 워커는 딱 한 번의 요청만 처리하고 폐기됩니다. 다음 요청은 항상 새 워커가 받기 때문에 이전 요청의 대화 내용이 섞여 들어갈 수 없습니다.
 
-이 설계에서 가장 까다로웠던 부분은 워커를 미리 띄워놓고 요청이 올 때까지 오래 대기시켜야 한다는 점이었습니다. `claude -p --input-format text`는 stdin 입력이 약 3초 안에 안 들어오면 포기하고 에러를 내는데, 이러면 "미리 띄워놓고 나중에 먹인다"는 전제 자체가 깨집니다. 조사 결과 `--input-format stream-json --output-format stream-json --verbose` 모드는 이 타임아웃이 없다는 걸 확인해서, 워커는 이 프로토콜로 stdin을 통해 프롬프트를 받고 stdout의 stream-json 라인 중 `"type":"result"`인 라인에서 응답을 추출합니다.
+워커는 `--input-format stream-json --output-format stream-json --verbose`로 실행됩니다 (`--input-format text`는 stdin 입력이 3초 안에 안 들어오면 에러를 내므로 사용하지 않음). stdin으로 `{"type":"user","message":{"role":"user","content":"<prompt>"}}` 형태의 JSON 한 줄을 받고, stdout의 stream-json 라인 중 `"type":"result"`인 라인에서 `is_error`/`result`/`duration_ms`를 추출합니다.
 
 ### 그 외
 
@@ -112,9 +112,7 @@ python -m claude_pool.daemon
 | idle (대기 중) | 약 360MB/개 | 약 425~440MB/개 |
 | 실제 요청 처리 중(peak) | 약 370MB/개 (+10~16MB) | 약 437MB/개 |
 
-실제 LLM 추론은 로컬이 아니라 Anthropic 서버에서 일어나고, 워커 프로세스는 요청 스트리밍·파싱 같은 가벼운 작업만 하기 때문에 idle 대비 처리 중 메모리 증가는 3~5% 수준으로 크지 않습니다.
-
-동일 바이너리를 여러 개 띄우면 DLL/공유 라이브러리 페이지가 겹쳐서, 워커 1개가 보고하는 값(약 360MB)보다 실제 여유 메모리 감소분은 더 적습니다 (8개 동시 실행 시 실측 약 180MB/개 순증가).
+idle 대비 처리 중 메모리 증가는 3~5% 수준입니다. 8개 동시 실행 시 실측 순증가는 워커당 약 180MB입니다 (여유 메모리 총 감소량 ÷ 워커 수).
 
 **적정량 계산**: `(여유 RAM − OS/다른 프로그램용 여유분 2~4GB) ÷ 워커당 200~400MB`
 
