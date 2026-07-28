@@ -76,3 +76,23 @@ async def test_acquire_never_exceeds_max_workers(tmp_path):
     worker3 = await asyncio.wait_for(third, timeout=5.0)
     await pool.release(worker3)
     await pool.release(acquired[1])
+
+
+async def test_scale_down_shrinks_idle_workers_back_to_min(tmp_path):
+    pool = WorkerPool(make_config(tmp_path, min_workers=1, max_workers=3))
+    await pool.start()
+
+    w1 = await pool.acquire()  # forces growth to 2 total
+    w2 = await pool.acquire()  # forces growth to 3 total (still under max? min=1,max=3 -> ok)
+    await pool.release(w1)
+    await pool.release(w2)
+
+    # right after release, replenish-to-min may have already run, but the
+    # grown extras should still be sitting idle above min_workers
+    assert pool.stats()["total"] >= pool.config.min_workers
+
+    # idle_timeout_sec=0.2 and scale_down_interval_sec=0.1 in make_config —
+    # wait past both so the sweep has a chance to run and trim excess idle
+    await asyncio.sleep(0.6)
+    assert pool.stats()["total"] == pool.config.min_workers
+    assert pool.stats()["idle"] == pool.config.min_workers

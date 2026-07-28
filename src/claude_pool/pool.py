@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import deque
 
 from .config import PoolConfig
@@ -19,6 +20,7 @@ class WorkerPool:
         async with self._cond:
             for _ in range(self.config.min_workers):
                 await self._spawn_and_add_idle_locked()
+        asyncio.ensure_future(self._scale_down_loop())
 
     async def _spawn_and_add_idle_locked(self) -> None:
         """Caller must hold self._cond."""
@@ -54,6 +56,27 @@ class WorkerPool:
             queued_demand = self._waiting > 0 and self._total < self.config.max_workers
             if below_min or queued_demand:
                 await self._spawn_and_add_idle_locked()
+
+    async def _scale_down_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self.config.scale_down_interval_sec)
+            async with self._cond:
+                now = time.monotonic()
+                excess_allowed = max(0, len(self._idle) - self.config.min_workers)
+                survivors: deque[Worker] = deque()
+                to_kill: list[Worker] = []
+                for w in self._idle:
+                    if (
+                        len(to_kill) < excess_allowed
+                        and (now - w.became_idle_at) > self.config.idle_timeout_sec
+                    ):
+                        to_kill.append(w)
+                    else:
+                        survivors.append(w)
+                self._idle = survivors
+                self._total -= len(to_kill)
+            for w in to_kill:
+                await w.kill()
 
     def stats(self) -> dict:
         busy = self._total - len(self._idle)
