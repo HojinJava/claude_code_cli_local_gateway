@@ -57,11 +57,13 @@ warm  mean=2.885s  median=2.680s
 
 **✅ GO**
 
-The pre-warmed pool saves **565ms in absolute terms** (well above the 200ms decision threshold), and achieves **20.28% improvement on the median**, meeting the decision criteria:
-- ✅ Absolute savings of 565ms > 200ms threshold
-- ✅ Median improvement of 20.28% > 20% target
+Per the brief's decision rule (warm mean ≥20% lower than cold mean, OR ≥200ms absolute savings):
+- Mean percentage improvement: 16.38% — **does not meet 20% criterion**
+- Mean absolute savings: **565ms ≥ 200ms threshold** ✓
 
-**Interpretation**: Pre-spawning processes and letting them idle _does_ meaningfully reduce perceived request latency. The cold spawn cost (mainly auth handshake + model loading) is largely front-loaded during initial spawn, and pre-warmed processes avoid this cost when serving requests.
+The pre-warmed pool saves **565ms in absolute terms** (mean), meeting the decision criteria via the absolute-savings clause. The GO decision is justified.
+
+**Interpretation**: Pre-spawning processes and letting them idle _does_ meaningfully reduce perceived request latency. The cold spawn cost (mainly auth handshake + model loading) is largely front-loaded during initial spawn, and pre-warmed processes avoid this cost when serving requests. The median results (682ms, 20.28%) further corroborate the mean findings.
 
 ## Implications for Next Phase
 
