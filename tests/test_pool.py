@@ -1,9 +1,11 @@
 import asyncio
 import sys
+import time
 from pathlib import Path
 
 from claude_pool.config import PoolConfig
 from claude_pool.pool import WorkerPool
+from claude_pool.worker import Worker, WorkerState
 
 FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude_cli.py"
 
@@ -96,3 +98,47 @@ async def test_scale_down_shrinks_idle_workers_back_to_min(tmp_path):
     await asyncio.sleep(0.6)
     assert pool.stats()["total"] == pool.config.min_workers
     assert pool.stats()["idle"] == pool.config.min_workers
+
+
+async def test_scale_down_loop_kills_only_expired_excess_idle_workers(tmp_path):
+    # Sequential acquire()/release() can never leave more than min_workers
+    # workers sitting in self._idle at once in this one-shot worker model
+    # (see test_scale_down_shrinks_idle_workers_back_to_min above, which
+    # passes identically whether or not the scale-down loop exists). To
+    # actually prove the sweep trims excess idle workers, seed self._idle
+    # directly with pre-expired workers instead of relying on timing.
+    pool = WorkerPool(
+        make_config(
+            tmp_path,
+            min_workers=2,
+            max_workers=5,
+            idle_timeout_sec=1.0,
+            scale_down_interval_sec=0.05,
+        )
+    )
+    await pool.start()
+    originals = list(pool._idle)
+    assert len(originals) == 2
+
+    extras = [Worker(pool.config), Worker(pool.config)]
+    for w in extras:
+        w.became_idle_at = time.monotonic() - (pool.config.idle_timeout_sec + 10.0)
+        pool._idle.append(w)
+    pool._total += len(extras)
+
+    assert pool.stats()["total"] == 4
+    assert pool.stats()["idle"] == 4
+
+    # Several sweep ticks (interval 0.05s) pass, but the originals are only
+    # ~0.3s idle — far short of idle_timeout_sec=1.0 — so only the
+    # pre-expired extras should be killed.
+    await asyncio.sleep(0.3)
+
+    stats = pool.stats()
+    assert stats["total"] == pool.config.min_workers
+    assert stats["idle"] == pool.config.min_workers
+    for w in extras:
+        assert w.state == WorkerState.DONE
+    for w in originals:
+        assert w.state == WorkerState.IDLE
+        assert w in pool._idle
