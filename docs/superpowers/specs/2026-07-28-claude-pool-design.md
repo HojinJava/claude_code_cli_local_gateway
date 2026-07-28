@@ -71,12 +71,13 @@ IDLE(대기, stdin open) → 요청 도착 → prompt 기록 + stdin EOF → 응
                                                                          └→ 백그라운드에서 새 워커 1개 보충
 ```
 
-워커 실행 커맨드 (예시):
+워커 실행 커맨드:
 
 ```
 claude -p \
-  --input-format text \
-  --output-format json \
+  --input-format stream-json \
+  --output-format stream-json \
+  --verbose \
   --no-session-persistence \
   --tools "" \
   --strict-mcp-config \
@@ -95,11 +96,27 @@ claude -p \
   순수 텍스트 생성만 수행.
 - 워커의 cwd는 리포 디렉터리가 아니라 별도의 빈 스크래치 디렉터리로 고정한다
   (프로젝트 파일 노출 방지).
+- `--input-format stream-json --output-format stream-json --verbose`: 처음에는
+  `--input-format text --output-format json`(단순 stdin 파이프)으로 설계했으나,
+  Task 11 실제 CLI 스모크 테스트에서 **실제 `claude -p`가 stdin 입력을 약 3초만
+  기다리다 포기하고 에러를 낸다는 것을 발견했다** ("no stdin data received in 3s,
+  proceeding without it"). 이는 "워커를 미리 띄워놓고 다음 요청이 올 때까지
+  무한정 대기"하는 예열 풀의 핵심 전제와 정면으로 충돌한다 — 실제 요청이 3초
+  이상 늦게 오면 워커가 이미 죽어있다. 조사 결과 `stream-json` 입출력 모드는 이
+  3초 타임아웃이 없음을 확인했다 (0초/6초/15초 지연 모두 정상 응답,
+  `docs/superpowers/plans/2026-07-28-stream-json-investigation.md` 참고). 이
+  모드는 `--output-format json`처럼 단일 JSON을 반환하지 않고 줄바꿈으로 구분된
+  여러 JSON 라인을 출력하므로, 워커는 stdout을 줄 단위로 스캔해서
+  `"type":"result"`인 라인에서 `is_error`/`result`/`duration_ms`를 추출해야
+  한다. 입력도 순수 텍스트가 아니라
+  `{"type":"user","message":{"role":"user","content":"<prompt>"}}` 형태의 JSON
+  한 줄이다.
 
-**검증이 필요한 전제**: "`claude -p`를 프롬프트 인자 없이 띄우면 stdin을 받을
-때까지 블로킹하며, 이 대기 상태에서 이미 인증/부팅이 끝나 있다"는 가정이다. 실제로
-실행해서 확인해야 하는 부분이므로, 구현 계획의 첫 단계로 이 가정을 검증하는
-벤치마크 스파이크를 둔다 (아래 "검증 계획" 참고).
+**검증된 전제**: "`claude -p`를 프롬프트 인자 없이 띄우면 stdin을 받을 때까지
+블로킹하며, 이 대기 상태에서 이미 인증/부팅이 끝나 있다"는 가정은 Task 1
+스파이크로 검증됐다 (부팅 오버헤드는 실제로 예열로 없앨 수 있음). 다만 정확히
+"몇 초까지 대기 가능한가"는 스파이크 당시엔 1초만 테스트해서 놓쳤고, 위
+stream-json 발견으로 보완됐다.
 
 ## 동적 풀 크기 조절 (오토스케일링)
 
