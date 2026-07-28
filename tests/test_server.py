@@ -68,3 +68,22 @@ async def test_generate_surfaces_worker_error(aiohttp_client, tmp_path):
     assert resp.status == 502
     data = await resp.json()
     assert "error" in data
+
+
+async def test_generate_rejects_non_dict_json_body(client):
+    resp = await client.post("/generate", json=[1, 2])
+    assert resp.status == 400
+    data = await resp.json()
+    assert "error" in data
+
+    resp = await client.post("/generate", json="hello")
+    assert resp.status == 400
+    data = await resp.json()
+    assert "error" in data
+
+
+async def test_generate_rejects_non_numeric_timeout_sec(client):
+    resp = await client.post("/generate", json={"prompt": "hello", "timeout_sec": "abc"})
+    assert resp.status == 400
+    data = await resp.json()
+    assert "error" in data

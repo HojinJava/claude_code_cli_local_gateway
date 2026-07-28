@@ -24,10 +24,17 @@ async def handle_generate(request: web.Request) -> web.Response:
     except json.JSONDecodeError:
         return web.json_response({"error": "invalid JSON body"}, status=400)
 
+    if not isinstance(body, dict):
+        return web.json_response({"error": "request body must be a JSON object"}, status=400)
+
     prompt = body.get("prompt")
     if not isinstance(prompt, str) or not prompt:
         return web.json_response({"error": "'prompt' is required"}, status=400)
-    timeout_sec = float(body.get("timeout_sec", pool.config.default_timeout_sec))
+
+    try:
+        timeout_sec = float(body.get("timeout_sec", pool.config.default_timeout_sec))
+    except (ValueError, TypeError):
+        return web.json_response({"error": "'timeout_sec' must be numeric"}, status=400)
 
     worker = await pool.acquire()
     try:
