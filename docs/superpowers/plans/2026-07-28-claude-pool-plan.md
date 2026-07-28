@@ -1501,7 +1501,286 @@ No commit for this task — it's a verification step, not a code change.
 
 ---
 
+## Task 12: Switch Worker + fake CLI to stream-json protocol (fixes the 3s stdin timeout)
+
+Task 11's manual smoke test against the real `claude` CLI found that plain `--input-format text --output-format json` gives up waiting for stdin after ~3 seconds ("Warning: no stdin data received in 3s, proceeding without it" → "Error: Input must be provided either through stdin or as a prompt argument when using --print"). This breaks the pre-warmed pool's core premise: a worker sitting idle for more than ~3s before a real request arrives will have already exited. Investigation (`docs/superpowers/plans/2026-07-28-stream-json-investigation.md`) confirmed `--input-format stream-json --output-format stream-json --verbose` has no such timeout (verified at 0s/6s/15s delays against the real CLI). This task switches `Worker` to that protocol and updates the fake CLI test double to speak it too. `WorkerPool`, the server, the daemon, and the client are unaffected — they only depend on `Worker.run()`'s returned `{"text", "duration_ms", "is_error"}` dict, which is unchanged.
+
+**Files:**
+- Modify: `tests/fixtures/fake_claude_cli.py`
+- Modify: `tests/fixtures/test_fake_claude_cli.py`
+- Modify: `src/claude_pool/worker.py`
+- Test: `tests/test_worker.py` (existing tests should keep passing unmodified — this task's new step only adds one test)
+
+**Interfaces:**
+- Consumes: nothing new — `Worker`'s public interface (`start()`, `is_alive()`, `run(prompt, timeout_sec) -> dict`, `kill()`, `became_idle_at`) is unchanged.
+- Produces: same `Worker` public interface as before; only its internal argv and stdout-parsing change.
+
+- [ ] **Step 1: Update the fake CLI to speak stream-json**
+
+Replace the entire contents of `tests/fixtures/fake_claude_cli.py`:
+
+```python
+"""Test double for the real `claude` CLI. Mimics the subset of
+`claude -p --input-format stream-json --output-format stream-json --verbose`
+behavior that Worker depends on: read one stream-json user-message line
+from stdin (blocking until EOF), then print a stream-json-shaped sequence
+of lines ending in one "type":"result" line. Unknown flags (the real
+CLI's flags, e.g. --tools, --safe-mode) are ignored.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--fake-mode", choices=["echo", "error", "crash"], default="echo")
+    parser.add_argument("--fake-delay-sec", type=float, default=0.0)
+    args, _unknown = parser.parse_known_args()
+
+    raw = sys.stdin.read()
+
+    if args.fake_delay_sec:
+        time.sleep(args.fake_delay_sec)
+
+    if args.fake_mode == "crash":
+        print("boom", file=sys.stderr)
+        sys.exit(1)
+
+    message = json.loads(raw.strip())
+    prompt = message["message"]["content"]
+
+    print(json.dumps({"type": "system", "subtype": "init"}))
+
+    if args.fake_mode == "error":
+        print(json.dumps({"type": "result", "is_error": True, "result": "simulated error", "duration_ms": 1}))
+        return
+
+    print(json.dumps({"type": "result", "is_error": False, "result": prompt, "duration_ms": 1}))
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 2: Update the fake CLI's own tests to send/expect stream-json**
+
+Replace the entire contents of `tests/fixtures/test_fake_claude_cli.py`:
+
+```python
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+FAKE_CLI = Path(__file__).parent / "fake_claude_cli.py"
+
+
+def _user_message(content: str) -> str:
+    return json.dumps({"type": "user", "message": {"role": "user", "content": content}})
+
+
+def _run(args, stdin_text):
+    return subprocess.run(
+        [sys.executable, str(FAKE_CLI), *args],
+        input=stdin_text.encode(),
+        capture_output=True,
+    )
+
+
+def _result_line(stdout: bytes) -> dict:
+    lines = [json.loads(line) for line in stdout.decode().splitlines() if line.strip()]
+    return next(line for line in lines if line["type"] == "result")
+
+
+def test_echo_mode_returns_message_content_as_result():
+    proc = _run(["--fake-mode", "echo"], _user_message("hello world"))
+    assert proc.returncode == 0
+    result = _result_line(proc.stdout)
+    assert result["is_error"] is False
+    assert result["result"] == "hello world"
+
+
+def test_error_mode_sets_is_error_true():
+    proc = _run(["--fake-mode", "error"], _user_message("anything"))
+    assert proc.returncode == 0
+    result = _result_line(proc.stdout)
+    assert result["is_error"] is True
+
+
+def test_crash_mode_exits_nonzero():
+    proc = _run(["--fake-mode", "crash"], _user_message("anything"))
+    assert proc.returncode != 0
+
+
+def test_ignores_real_cli_flags_it_does_not_know_about():
+    proc = _run(
+        ["--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+         "--tools", "", "--fake-mode", "echo"],
+        _user_message("still works"),
+    )
+    assert proc.returncode == 0
+    result = _result_line(proc.stdout)
+    assert result["result"] == "still works"
+```
+
+- [ ] **Step 3: Run the fake CLI's own tests to confirm they pass against the new protocol**
+
+Run: `pytest tests/fixtures/test_fake_claude_cli.py -v`
+Expected: PASS (4 passed)
+
+- [ ] **Step 4: Update `Worker` to use stream-json**
+
+In `src/claude_pool/worker.py`, replace `_build_argv` and `run`:
+
+```python
+    def _build_argv(self) -> list[str]:
+        return [
+            *self.config.claude_cmd,
+            "-p",
+            "--input-format", "stream-json",
+            "--output-format", "stream-json",
+            "--verbose",
+            "--no-session-persistence",
+            "--tools", "",
+            "--strict-mcp-config",
+            "--safe-mode",
+            "--model", self.config.model,
+        ]
+```
+
+```python
+    async def run(self, prompt: str, timeout_sec: float) -> dict:
+        if self._proc is None:
+            raise WorkerError("worker not started")
+        self.state = WorkerState.BUSY
+        message = json.dumps({
+            "type": "user",
+            "message": {"role": "user", "content": prompt},
+        }) + "\n"
+        try:
+            stdout_data, stderr_data = await asyncio.wait_for(
+                self._proc.communicate(input=message.encode("utf-8")),
+                timeout=timeout_sec,
+            )
+        except asyncio.TimeoutError:
+            await self.kill()
+            raise
+        finally:
+            self.state = WorkerState.DONE
+
+        if self._proc.returncode != 0:
+            raise WorkerError(
+                f"worker exited with code {self._proc.returncode}: "
+                f"{stderr_data.decode('utf-8', errors='replace')}"
+            )
+
+        result_line = None
+        for line in stdout_data.decode("utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if payload.get("type") == "result":
+                result_line = payload
+                break
+
+        if result_line is None:
+            raise WorkerError("no 'result' line found in worker stream-json output")
+
+        return {
+            "text": result_line.get("result", ""),
+            "duration_ms": result_line.get("duration_ms", 0),
+            "is_error": bool(result_line.get("is_error", False)),
+        }
+```
+
+(`import json` is already present at the top of `worker.py` from the original implementation — don't add it twice.)
+
+- [ ] **Step 5: Run Worker's existing tests to confirm they still pass unmodified**
+
+Run: `pytest tests/test_worker.py -v`
+Expected: PASS (5 passed) — none of the existing 5 test cases need code changes, since `Worker`'s public interface and the fake CLI's `--fake-mode`/`--fake-delay-sec` flags are unchanged; only the wire protocol between them changed.
+
+- [ ] **Step 6: Add one new test proving the argv now requests stream-json**
+
+Append to `tests/test_worker.py`:
+
+```python
+async def test_build_argv_uses_stream_json_protocol(tmp_path):
+    worker = Worker(make_config(tmp_path, "--fake-mode", "echo"))
+    argv = worker._build_argv()
+    assert "--input-format" in argv
+    assert argv[argv.index("--input-format") + 1] == "stream-json"
+    assert "--output-format" in argv
+    assert argv[argv.index("--output-format") + 1] == "stream-json"
+    assert "--verbose" in argv
+```
+
+- [ ] **Step 7: Run the full test suite to confirm nothing downstream broke**
+
+Run: `pytest -v`
+Expected: PASS, same total count as before this task plus the 1 new test (Tasks 5-10's tests all go through `Worker.run()` indirectly via `WorkerPool`/the server/the daemon/the client and the fake CLI — none of them should need changes, since `Worker`'s return shape is unchanged).
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add tests/fixtures/fake_claude_cli.py tests/fixtures/test_fake_claude_cli.py src/claude_pool/worker.py tests/test_worker.py
+git commit -m "fix: switch worker to stream-json protocol to avoid the 3s stdin timeout"
+```
+
+---
+
+## Task 13: Re-run the manual smoke test to confirm the fix
+
+Task 11 failed against the real CLI due to the 3s stdin timeout; Task 12 fixed it. Re-run the same manual verification to confirm the fix holds end-to-end against the real `claude` binary.
+
+**Files:** none created or modified.
+
+- [ ] **Step 1: Start the real daemon**
+
+```bash
+python -m claude_pool.daemon
+```
+
+- [ ] **Step 2: Check health, then deliberately wait past the old 3s failure point before sending a request**
+
+```bash
+curl http://127.0.0.1:8756/health
+```
+
+Expected: `"idle": 4, "busy": 0, "total": 4` (or close to it).
+
+Wait at least 10 seconds (well past the ~3s window that broke Task 11) before proceeding to Step 3 — this is the whole point of the re-test.
+
+- [ ] **Step 3: Send a real request after the delay**
+
+```bash
+curl -X POST http://127.0.0.1:8756/generate -H "Content-Type: application/json" -d "{\"prompt\": \"reply with the single word PONG\"}"
+```
+
+Expected: `{"text": "PONG", "duration_ms": <number>}` — NOT the "no stdin data received" error Task 11 hit.
+
+- [ ] **Step 4: Confirm independent tenancy manually**
+
+Same as Task 11's Step 4: send two requests with contradictory instructions back to back (e.g., "the secret number is 7, remember it" then "what secret number did I just tell you?") and confirm the second response shows no awareness of the first.
+
+- [ ] **Step 5: Stop the daemon**
+
+Kill the daemon process.
+
+No commit for this task — it's a verification step, not a code change.
+
+---
+
 ## Plan Self-Review Notes
 
 - **Spec coverage**: independent tenant (Tasks 4-6, verified in Task 10), speed via pre-warming (Task 1 spike gates the whole plan, Tasks 4-6 implement it), concurrency (Task 5's `acquire`/`_grow_by_one`, verified in Task 10), stdin-only input (`Worker.run` in Task 4), no auth / localhost-only (Task 7's server binds via `TCPSite(host="127.0.0.1", ...)` in Task 8), min/max autoscaling (Tasks 5-6), API shape (Task 7), error handling (Task 7's timeout/crash/queue paths), daemon auto-start (Task 9), model-override-removed correction (reflected in `PoolConfig.model` being fixed per instance, no `model` field accepted in `/generate`'s body handling in Task 7).
 - **Deferred by design** (per spec's "후속 작업"): global CLAUDE.md discoverability note and README architecture diagram are explicitly out of scope for this plan — they depend on the implementation existing first, exactly as the user requested.
+- **Amendment (added after Task 11)**: Task 11's real-CLI smoke test found a genuine plan defect — the mandated plain-text stdin protocol has a ~3s timeout in the real `claude -p` that breaks pre-warmed workers. Tasks 12-13 correct this (switch to stream-json, re-verify against the real CLI) rather than leaving it as a deferred minor, since it's load-bearing for the whole pool design.
