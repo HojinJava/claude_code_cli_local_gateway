@@ -5,6 +5,7 @@ import json
 import time
 from enum import Enum
 
+from . import winjob
 from .config import PoolConfig
 
 
@@ -20,8 +21,9 @@ class WorkerError(Exception):
 
 
 class Worker:
-    def __init__(self, config: PoolConfig):
+    def __init__(self, config: PoolConfig, job: object | None = None):
         self.config = config
+        self.job = job
         self.state = WorkerState.STARTING
         self.became_idle_at: float = 0.0
         self._proc: asyncio.subprocess.Process | None = None
@@ -48,6 +50,11 @@ class Worker:
             stderr=asyncio.subprocess.PIPE,
             cwd=str(self.config.scratch_dir),
         )
+        # Kernel-enforced: if the daemon process dies for any reason
+        # (crash, kill -9, power loss) before it gets a chance to run
+        # WorkerPool.stop(), Windows itself terminates this process when
+        # the job's last handle closes.
+        winjob.assign_process_to_job(self.job, self._proc.pid)
         self.state = WorkerState.IDLE
         self.became_idle_at = time.monotonic()
 

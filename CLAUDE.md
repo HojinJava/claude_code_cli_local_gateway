@@ -14,6 +14,7 @@
 - `src/claude_pool/daemon.py` — 데몬 엔트리포인트, 위 셋을 조립.
 - `src/claude_pool/client.py` — 의존성 없는(stdlib `urllib`만 사용) 클라이언트, 데몬 자동 기동.
 - `src/claude_pool/config.py` — `PoolConfig` (환경변수로 설정, `__post_init__`에서 host가 loopback인지 검증).
+- `src/claude_pool/winjob.py` — Windows Job Object 래퍼. `WorkerPool`이 생성한 job에 모든 워커를 묶어서, 데몬이 어떻게 죽든(정상 종료든 크래시든) OS가 워커 프로세스를 정리하게 한다.
 
 ## 반드시 지켜야 할 것
 
@@ -22,6 +23,7 @@
 - **인증 계층을 추가하지 않는다.** `127.0.0.1`(loopback) 바인딩만으로 보호한다. `--bare` 플래그는 절대 쓰지 않는다 (API 키만 지원해서 구독 인증이 깨진다).
 - **`model`은 요청별로 override하지 않는다.** 데몬 하나당 모델 하나로 고정한다 (`PoolConfig.model`). 다른 모델이 필요하면 다른 포트로 데몬을 하나 더 띄운다.
 - **워커는 1회용이다.** 절대 재사용하지 않는다 — 컨텍스트 격리(독립 테넌트)가 이 프로젝트의 핵심 요구사항이다.
+- **모든 워커는 `winjob`의 kill-on-close job에 할당돼야 한다.** `Worker`를 새로 스폰하는 코드를 추가할 때 `job` 인자를 빠뜨리지 말 것 — 이게 데몬 크래시 시 고아 프로세스를 막는 유일한 안전장치다.
 
 ## 개발 명령어
 

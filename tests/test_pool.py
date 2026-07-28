@@ -255,3 +255,34 @@ async def test_stop_wakes_parked_acquire_waiters(tmp_path):
         await asyncio.wait_for(waiter, timeout=2.0)
 
     await pool.release(held)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only job object behavior")
+async def test_pool_workers_die_if_job_handle_closes_without_stop(tmp_path):
+    import win32api
+    import win32con
+    import win32process
+
+    def is_running(pid: int) -> bool:
+        try:
+            handle = win32api.OpenProcess(win32con.PROCESS_QUERY_INFORMATION, False, pid)
+        except Exception:
+            return False
+        code = win32process.GetExitCodeProcess(handle)
+        handle.Close()
+        return code == 259  # STILL_ACTIVE
+
+    pool = WorkerPool(make_config(tmp_path, min_workers=2))
+    await pool.start()
+    pids = [w._proc.pid for w in pool._idle]
+    assert all(is_running(pid) for pid in pids)
+
+    # Simulate the daemon process being killed outright -- no chance to run
+    # pool.stop(), just the job handle closing, exactly what the OS does on
+    # its own when a process holding it dies for any reason.
+    pool._job.Close()
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and any(is_running(pid) for pid in pids):
+        await asyncio.sleep(0.1)
+    assert all(not is_running(pid) for pid in pids)

@@ -4,6 +4,7 @@ import asyncio
 import time
 from collections import deque
 
+from . import winjob
 from .config import PoolConfig
 from .worker import Worker
 
@@ -17,6 +18,11 @@ class PoolUnavailableError(Exception):
 class WorkerPool:
     def __init__(self, config: PoolConfig):
         self.config = config
+        # Kill-on-close job: even if this daemon process is killed outright
+        # with no chance to run stop(), Windows terminates every worker
+        # assigned to this job the moment its last handle closes. None on
+        # non-Windows platforms (no-op there).
+        self._job = winjob.create_kill_on_close_job()
         self._idle: deque[Worker] = deque()
         self._total = 0
         self._waiting = 0
@@ -72,7 +78,7 @@ class WorkerPool:
 
     async def _spawn_and_add_idle_locked(self) -> None:
         """Caller must hold self._cond."""
-        worker = Worker(self.config)
+        worker = Worker(self.config, job=self._job)
         await worker.start()
         self._idle.append(worker)
         self._total += 1
