@@ -133,7 +133,7 @@ claude -p \
 
 ```
 POST /generate
-  body: { "prompt": str, "model"?: str, "timeout_sec"?: number }
+  body: { "prompt": str, "timeout_sec"?: number }
   200: { "text": str, "duration_ms": number }
   4xx/5xx: { "error": str }
 
@@ -141,7 +141,11 @@ GET /health
   200: { "min_workers": int, "max_workers": int, "total": int, "idle": int, "busy": int }
 ```
 
-- `model`은 요청마다 override 가능, 기본값은 데몬 시작 옵션으로 설정한다.
+- `model`은 요청별 override를 지원하지 않는다. 워커는 예열을 위해 프로세스 시작
+  시점에 `--model`을 고정해서 뜨는데, 요청마다 다른 모델을 받으면 예열된 워커를
+  못 쓰고 콜드 스폰을 해야 해서 예열의 이점이 사라진다. 대신 모델은 데몬 시작
+  옵션(`PoolConfig.model`)으로 데몬 하나당 하나만 고정한다. 다른 모델이 필요하면
+  다른 포트로 데몬 인스턴스를 하나 더 띄운다.
 - 스트리밍은 v1 범위에서 제외한다. Claude Code CLI는
   `--output-format stream-json --include-partial-messages`로 청크 단위 출력을
   지원하므로 기술적으로는 가능하지만, 워커 stdout 파싱과 HTTP 응답 방식이
