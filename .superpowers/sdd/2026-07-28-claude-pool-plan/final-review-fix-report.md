@@ -328,7 +328,9 @@ the timing-sensitive pool tests — 50 passed every time.
 
 ## Commit
 
-`a66d96b` — `fix: close worker-lifecycle, pool-availability, and binding gaps from final review`
+`3842a27` — `fix: close worker-lifecycle, pool-availability, and binding gaps from final review`
 
-Single commit on `feature/implement-claude-pool`. The repository has no remote
-configured, so nothing was pushed and no PR was opened.
+All source and test changes are in that single commit on
+`feature/implement-claude-pool`; a follow-up `docs:` commit only corrects the
+commit hash recorded in this file. The repository has no remote configured, so
+nothing was pushed and no PR was opened.
