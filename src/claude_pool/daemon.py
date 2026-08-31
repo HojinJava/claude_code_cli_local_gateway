@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import signal
+from pathlib import Path
 
 from aiohttp import web
 
@@ -9,6 +11,16 @@ from .config import PoolConfig
 from .jobs import JobStore
 from .pool import WorkerPool
 from .server import create_app
+
+
+def pid_file(config: PoolConfig) -> Path:
+    """Per-port, so stopping one daemon never touches another.
+
+    Running a second daemon on another port for a different model is a
+    supported setup, which is exactly what matching on the command line
+    would get wrong -- every daemon shares the same one.
+    """
+    return config.scratch_dir / f"daemon-{config.port}.pid"
 
 
 async def run_daemon(config: PoolConfig) -> None:
@@ -23,8 +35,12 @@ async def run_daemon(config: PoolConfig) -> None:
         await runner.setup()
         site = web.TCPSite(runner, host=config.host, port=config.port)
         await site.start()
+        pid_file(config).write_text(str(os.getpid()), encoding="utf-8")
         await _wait_for_shutdown_signal()
     finally:
+        # A hard kill never reaches this, so readers must treat the file as a
+        # hint and verify the pid is really this daemon before acting on it.
+        pid_file(config).unlink(missing_ok=True)
         try:
             if runner is not None:
                 await runner.cleanup()

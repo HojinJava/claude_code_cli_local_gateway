@@ -2,6 +2,40 @@
 
 Claude Code CLI(`claude`)를 로컬 LLM처럼 쓰기 위한 HTTP 게이트웨이입니다. `claude -p` 워커 프로세스를 미리 띄워놓고 대기시켜서, 매 요청마다 CLI 부팅 비용을 새로 치르지 않고도 여러 곳에서 동시에 호출할 수 있게 해줍니다.
 
+## 빠른 시작
+
+```bash
+python scripts/daemon_ctl.py start      # 실행 (이미 떠 있으면 그대로 둠)
+python scripts/daemon_ctl.py status     # 상태 확인
+python scripts/daemon_ctl.py restart    # 재시작
+python scripts/daemon_ctl.py stop       # 종료 (워커까지 함께 정리됨)
+```
+
+```
+running  pid=109600  http://127.0.0.1:8756
+  model    sonnet
+  workers  4/4 idle alive, 0 busy  (min 4, max 30)
+  jobs     0 running, 0 kept
+  docs     http://127.0.0.1:8756/docs
+```
+
+**문서: <http://127.0.0.1:8756/docs>** — 데몬이 자기 사용법을 직접 서빙합니다 (브라우저용 HTML, `GET /`은 같은 내용의 JSON).
+
+호출해 보기:
+
+```bash
+curl -s -X POST http://127.0.0.1:8756/generate   -H "Content-Type: application/json"   -d "{\"prompt\": \"reply with the single word PONG\"}"
+```
+
+설정은 환경변수로 바꾸며, `daemon_ctl.py`도 같은 환경변수를 읽습니다:
+
+```bash
+CLAUDE_POOL_MODEL=haiku CLAUDE_POOL_MIN_WORKERS=1 python scripts/daemon_ctl.py start
+CLAUDE_POOL_PORT=8757 python scripts/daemon_ctl.py start    # 다른 모델용 데몬을 하나 더
+```
+
+> 워커는 **창 없이** 실행됩니다. 호출해도 터미널/CMD 창이 뜨지 않는 게 정상입니다 — 돌아가는지는 `status`나 `/health`의 `busy`로 확인하세요.
+
 ## 왜 만들었나
 
 Claude Code 구독형 계정도 API 토큰처럼 코드에서 호출해서 쓰기 위해 만들었습니다. 별도 API 키 없이, 이미 인증된 구독 계정을 그대로 로컬 HTTP 엔드포인트로 노출해서 원하는 곳에서 프롬프트를 넣고 텍스트 응답을 받을 수 있게 합니다.
@@ -140,8 +174,11 @@ Python 3.11 이상, 그리고 로컬에 인증된 `claude` CLI가 PATH에 있어
 ### 데몬 실행
 
 ```bash
-python -m claude_pool.daemon
+python scripts/daemon_ctl.py start   # detached로 기동 + 상태 출력 (권장)
+python -m claude_pool.daemon         # 포그라운드로 직접 실행 (Ctrl+C로 종료)
 ```
+
+`daemon_ctl.py`는 기동할 포트의 pid를 `<scratch_dir>/daemon-<port>.pid`에 기록하고, `stop`은 그 pid가 **정말 claude-pool 데몬인지 커맨드라인으로 확인한 뒤에만** 종료합니다. pid는 재사용되고 강제 종료는 파일을 지우지 못하고 남기기 때문입니다. pid 파일이 없는데 포트가 응답하면(구버전으로 띄웠거나 손으로 띄운 경우) 실행 중인 데몬이 정확히 하나일 때만 그걸 잡고, 여러 개면 어느 게 이 포트인지 알 수 없으므로 **거절하고 후보 pid를 알려줍니다** — 포트는 커맨드라인에 안 나타나기 때문입니다(환경변수에서 옴).
 
 기본값은 `min_workers=4`, `max_workers=30`, `model=sonnet`, `127.0.0.1:8756`입니다. 환경변수로 바꿀 수 있습니다:
 

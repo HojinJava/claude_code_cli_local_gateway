@@ -36,12 +36,14 @@
 - **워커를 쓰는 모든 경로는 `runner.execute()`를 거쳐야 한다.** 여기에만 `release_in_background` 호출이 있고, 그게 취소된 호출자와 고아 `claude` 프로세스 사이의 유일한 방어선이다. `/generate`와 `/jobs`가 워커를 다르게 다루면 안 된다.
 - **데몬 종료 시 `JobStore.shutdown()`이 `pool.stop()`보다 먼저 와야 한다.** job을 취소해야 워커가 풀로 반납되고, 그 다음에야 풀이 전부 정리할 수 있다.
 - **워커 스폰에서 `CREATE_NO_WINDOW`(`worker.CREATION_FLAGS`)를 빼지 말 것.** 데몬은 콘솔 없이 도는데, 콘솔 없는 부모가 콘솔 앱을 스폰하면 Windows가 새 콘솔을 할당하고 Windows 11의 기본 터미널 앱이 그걸 진짜 창으로 그린다 → 워커 스폰마다 터미널 창 1개. 실측: 플래그 없으면 스폰당 1개, 있으면 0개. 이건 스폰 순간에만 관찰되므로, 이미 떠 있는 워커의 `MainWindowHandle`을 보는 걸로는 검증되지 않는다.
+- **pid 파일은 힌트지 사실이 아니다.** 강제 종료는 파일을 지우지 못하고 남기며 OS는 pid를 재사용하므로, pid로 뭔가를 죽이기 전에 반드시 그 프로세스가 정말 claude_pool 데몬인지 확인할 것 (`scripts/daemon_ctl.py`가 그렇게 한다).
 - **모든 워커는 `winjob`의 kill-on-close job에 할당돼야 한다.** `Worker`를 새로 스폰하는 코드를 추가할 때 `job` 인자를 빠뜨리지 말 것 — 이게 데몬 크래시 시 고아 프로세스를 막는 유일한 안전장치다.
 
 ## 개발 명령어
 
 ```bash
-pip install -e ".[dev]"       # 설치
-pytest -v                     # 전체 테스트 (가짜 CLI 기반, 비용 없음)
-python -m claude_pool.daemon  # 데몬 실행
+pip install -e ".[dev]"                  # 설치
+pytest -v                                # 전체 테스트 (가짜 CLI 기반, 비용 없음)
+python scripts/daemon_ctl.py start       # 데몬 기동 (start|stop|restart|status)
+python -m claude_pool.daemon             # 포그라운드로 직접 실행
 ```
