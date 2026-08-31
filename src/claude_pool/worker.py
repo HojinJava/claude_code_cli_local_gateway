@@ -3,17 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from enum import Enum
 
 from . import winjob
 from .config import PoolConfig
-
-
-class WorkerState(Enum):
-    STARTING = "starting"
-    IDLE = "idle"
-    BUSY = "busy"
-    DONE = "done"
 
 
 class WorkerError(Exception):
@@ -24,7 +16,6 @@ class Worker:
     def __init__(self, config: PoolConfig, job: object | None = None):
         self.config = config
         self.job = job
-        self.state = WorkerState.STARTING
         self.became_idle_at: float = 0.0
         self._proc: asyncio.subprocess.Process | None = None
 
@@ -55,16 +46,23 @@ class Worker:
         # WorkerPool.stop(), Windows itself terminates this process when
         # the job's last handle closes.
         winjob.assign_process_to_job(self.job, self._proc.pid)
-        self.state = WorkerState.IDLE
         self.became_idle_at = time.monotonic()
 
     def is_alive(self) -> bool:
+        """Best-effort liveness, not a guarantee.
+
+        `returncode` only flips once asyncio has reaped the child, so a
+        process that has just died still reports alive for a short window —
+        measured: a CLI that exits ~150ms after spawn is still handed out.
+        Callers must therefore treat a handed-out worker as possibly dead and
+        rely on run() surfacing its exit code and stderr; this check only
+        keeps *known*-dead workers out of circulation.
+        """
         return self._proc is not None and self._proc.returncode is None
 
     async def run(self, prompt: str, timeout_sec: float) -> dict:
         if self._proc is None:
             raise WorkerError("worker not started")
-        self.state = WorkerState.BUSY
         message = json.dumps({
             "type": "user",
             "message": {"role": "user", "content": prompt},
@@ -77,8 +75,6 @@ class Worker:
         except asyncio.TimeoutError:
             await self.kill()
             raise
-        finally:
-            self.state = WorkerState.DONE
 
         if self._proc.returncode != 0:
             raise WorkerError(
@@ -87,7 +83,9 @@ class Worker:
             )
 
         result_line = None
-        for line in stdout_data.decode("utf-8").splitlines():
+        # errors="replace" so a stray non-UTF-8 byte surfaces as a WorkerError
+        # the server can classify, not a UnicodeDecodeError that becomes a 500.
+        for line in stdout_data.decode("utf-8", errors="replace").splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -106,10 +104,10 @@ class Worker:
             "text": result_line.get("result", ""),
             "duration_ms": result_line.get("duration_ms", 0),
             "is_error": bool(result_line.get("is_error", False)),
+            "subtype": result_line.get("subtype", ""),
         }
 
     async def kill(self) -> None:
         if self._proc is not None and self._proc.returncode is None:
             self._proc.kill()
             await self._proc.wait()
-        self.state = WorkerState.DONE

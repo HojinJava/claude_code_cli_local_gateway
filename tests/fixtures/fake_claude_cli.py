@@ -17,6 +17,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fake-mode", choices=["echo", "error", "crash"], default="echo")
     parser.add_argument("--fake-delay-sec", type=float, default=0.0)
+    # Lets a test drive the server's failure classification with realistic
+    # CLI wording (rate limit, expired login, ...).
+    parser.add_argument("--fake-error-text", default=None)
     args, _unknown = parser.parse_known_args()
 
     raw = sys.stdin.read()
@@ -25,7 +28,7 @@ def main() -> None:
         time.sleep(args.fake_delay_sec)
 
     if args.fake_mode == "crash":
-        print("boom", file=sys.stderr)
+        print(args.fake_error_text or "boom", file=sys.stderr)
         sys.exit(1)
 
     message = json.loads(raw.strip())
@@ -34,7 +37,12 @@ def main() -> None:
     print(json.dumps({"type": "system", "subtype": "init"}))
 
     if args.fake_mode == "error":
-        print(json.dumps({"type": "result", "is_error": True, "result": "simulated error", "duration_ms": 1}))
+        print(json.dumps({
+            "type": "result",
+            "is_error": True,
+            "result": args.fake_error_text or "simulated error",
+            "duration_ms": 1,
+        }))
         return
 
     print(json.dumps({"type": "result", "is_error": False, "result": prompt, "duration_ms": 1}))

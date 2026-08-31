@@ -28,6 +28,10 @@ class WorkerPool:
         self._waiting = 0
         self._cond = asyncio.Condition()
         self._last_spawn_error: BaseException | None = None
+        # Last request failure, kept so /health can report *why* a
+        # healthy-looking pool is not answering (expired login, rate limit)
+        # instead of only how many workers it has counted.
+        self._last_error: str | None = None
         self._pending_grows = 0
         self._scale_down_task: asyncio.Task | None = None
         self._background_tasks: set[asyncio.Task] = set()
@@ -99,6 +103,12 @@ class WorkerPool:
             return False
         return True
 
+    def note_failure(self, error: str) -> None:
+        self._last_error = error
+
+    def note_success(self) -> None:
+        self._last_error = None
+
     def _track(self, task: asyncio.Task) -> asyncio.Task:
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
@@ -128,8 +138,11 @@ class WorkerPool:
                     worker = self._idle.popleft()
                     if worker.is_alive():
                         return worker
-                    # Idle workers can die on their own (the real CLI is not
-                    # verified to survive long idles), so never hand one out.
+                    # Idle workers can die on their own, so drop the ones
+                    # already known to be dead. This is a filter, not a
+                    # guarantee — see Worker.is_alive(): a worker that died
+                    # moments ago still reports alive and will be handed out,
+                    # and run() is what surfaces its exit code and stderr.
                     self._total -= 1
                     await worker.kill()
 
@@ -209,11 +222,28 @@ class WorkerPool:
                     self._total -= 1
 
     def stats(self) -> dict:
-        busy = self._total - len(self._idle)
+        """Pool state for /health.
+
+        `idle` is a counter; `idle_alive` is a liveness probe. They diverge
+        exactly when the pool is holding pre-warmed workers whose `claude`
+        process has already died — a logged-out CLI, an exhausted quota, a
+        bad flag — which is the case a counters-only health check reported
+        as perfectly healthy.
+        """
+        idle_alive = sum(1 for w in self._idle if w.is_alive())
         return {
             "min_workers": self.config.min_workers,
             "max_workers": self.config.max_workers,
             "total": self._total,
             "idle": len(self._idle),
-            "busy": busy,
+            "idle_alive": idle_alive,
+            "busy": self._total - len(self._idle),
+            # True when every worker the pool is counting as idle really is
+            # one. Vacuously true for an empty pool (min_workers=0 spawns on
+            # demand), false exactly when pre-warmed workers have died under it.
+            "healthy": idle_alive == len(self._idle),
+            "last_spawn_error": (
+                str(self._last_spawn_error) if self._last_spawn_error else None
+            ),
+            "last_error": self._last_error,
         }

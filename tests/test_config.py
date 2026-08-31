@@ -40,3 +40,32 @@ def test_from_env_rejects_non_loopback_host(monkeypatch):
     monkeypatch.setenv("CLAUDE_POOL_HOST", "0.0.0.0")
     with pytest.raises(ValueError, match="loopback"):
         PoolConfig.from_env()
+
+
+def test_scratch_dir_env_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_POOL_SCRATCH_DIR", str(tmp_path / "scratch"))
+    assert PoolConfig.from_env().scratch_dir == tmp_path / "scratch"
+
+
+def test_scratch_dir_defaults_under_home(monkeypatch):
+    monkeypatch.delenv("CLAUDE_POOL_SCRATCH_DIR", raising=False)
+    assert PoolConfig.from_env().scratch_dir.name == "scratch"
+
+
+@pytest.mark.parametrize("bad", ["claude", [], ["claude", 3], {"a": 1}, None])
+def test_claude_cmd_must_be_a_non_empty_list_of_strings(bad):
+    # A bare string would otherwise be splatted one character per argv entry.
+    with pytest.raises(ValueError, match="claude_cmd"):
+        PoolConfig(claude_cmd=bad)
+
+
+def test_from_env_rejects_unparsable_claude_cmd_json(monkeypatch):
+    monkeypatch.setenv("CLAUDE_POOL_CLAUDE_CMD_JSON", "{not json")
+    with pytest.raises(ValueError, match="not valid JSON"):
+        PoolConfig.from_env()
+
+
+def test_from_env_rejects_claude_cmd_json_that_is_not_a_list(monkeypatch):
+    monkeypatch.setenv("CLAUDE_POOL_CLAUDE_CMD_JSON", '"claude"')
+    with pytest.raises(ValueError, match="claude_cmd"):
+        PoolConfig.from_env()

@@ -7,7 +7,7 @@ import pytest
 
 from claude_pool.config import PoolConfig
 from claude_pool.pool import PoolUnavailableError, WorkerPool
-from claude_pool.worker import Worker, WorkerState
+from claude_pool.worker import Worker
 
 FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude_cli.py"
 MISSING_BINARY = ["claude-pool-no-such-binary-xyz"]
@@ -141,9 +141,9 @@ async def test_scale_down_loop_kills_only_expired_excess_idle_workers(tmp_path, 
     assert stats["total"] == pool.config.min_workers
     assert stats["idle"] == pool.config.min_workers
     for w in extras:
-        assert w.state == WorkerState.DONE
+        assert not w.is_alive()
     for w in originals:
-        assert w.state == WorkerState.IDLE
+        assert w.is_alive()
         assert w in pool._idle
 
 
@@ -274,7 +274,8 @@ async def test_pool_workers_die_if_job_handle_closes_without_stop(tmp_path):
 
     pool = WorkerPool(make_config(tmp_path, min_workers=2))
     await pool.start()
-    pids = [w._proc.pid for w in pool._idle]
+    workers = list(pool._idle)
+    pids = [w._proc.pid for w in workers]
     assert all(is_running(pid) for pid in pids)
 
     # Simulate the daemon process being killed outright -- no chance to run
@@ -286,3 +287,9 @@ async def test_pool_workers_die_if_job_handle_closes_without_stop(tmp_path):
     while time.monotonic() < deadline and any(is_running(pid) for pid in pids):
         await asyncio.sleep(0.1)
     assert all(not is_running(pid) for pid in pids)
+
+    # The OS reclaimed the processes, but asyncio's own pipe teardown runs
+    # as loop callbacks; without giving them a turn before this test's loop
+    # is torn down, they are reported later as "unclosed transport".
+    for w in workers:
+        await w.kill()

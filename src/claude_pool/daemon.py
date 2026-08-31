@@ -6,6 +6,7 @@ import signal
 from aiohttp import web
 
 from .config import PoolConfig
+from .jobs import JobStore
 from .pool import WorkerPool
 from .server import create_app
 
@@ -13,10 +14,11 @@ from .server import create_app
 async def run_daemon(config: PoolConfig) -> None:
     config.scratch_dir.mkdir(parents=True, exist_ok=True)
     pool = WorkerPool(config)
+    jobs = JobStore(pool, retention_sec=config.job_retention_sec, max_jobs=config.max_jobs)
     runner: web.AppRunner | None = None
     try:
         await pool.start()
-        app = create_app(pool)
+        app = create_app(pool, jobs)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, host=config.host, port=config.port)
@@ -27,6 +29,9 @@ async def run_daemon(config: PoolConfig) -> None:
             if runner is not None:
                 await runner.cleanup()
         finally:
+            # Jobs first: cancelling them releases their workers back through
+            # the pool, so pool.stop() can then drain and kill everything.
+            await jobs.shutdown()
             await pool.stop()
 
 
