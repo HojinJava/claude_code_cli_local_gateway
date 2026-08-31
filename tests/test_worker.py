@@ -82,3 +82,29 @@ async def test_kill_is_idempotent(tmp_path):
 
 async def test_kill_before_start_is_a_no_op(tmp_path):
     await Worker(make_config(tmp_path)).kill()
+
+
+async def test_worker_spawns_without_allocating_a_console_window(tmp_path, monkeypatch):
+    # The daemon runs console-less, so without CREATE_NO_WINDOW Windows gives
+    # every worker a fresh console — which the default terminal app renders as
+    # a real window. Measured before the flag: one window per spawn.
+    captured = {}
+    real = asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):
+        captured.update(kwargs)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+    worker = Worker(make_config(tmp_path, "--fake-mode", "echo"))
+    await worker.start()
+    try:
+        assert "creationflags" in captured
+        if sys.platform == "win32":
+            import subprocess
+            assert captured["creationflags"] & subprocess.CREATE_NO_WINDOW
+        else:
+            # Popen rejects a non-zero creationflags off Windows.
+            assert captured["creationflags"] == 0
+    finally:
+        await worker.kill()

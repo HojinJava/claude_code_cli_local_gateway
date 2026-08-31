@@ -2,10 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import sys
 import time
 
 from . import winjob
 from .config import PoolConfig
+
+# The daemon normally runs with no console of its own (the client starts it
+# DETACHED_PROCESS). Spawning a console application from a console-less
+# parent makes Windows allocate a fresh console for the child — and on
+# Windows 11 that console is hosted by the default terminal app, so a
+# terminal window pops open for every single worker. Measured: one visible
+# WindowsTerminal window per spawn without this flag, zero with it. The
+# worker's stdio is piped either way, so the console was never good for
+# anything but flashing at the user.
+CREATION_FLAGS = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 
 class WorkerError(Exception):
@@ -40,6 +52,7 @@ class Worker:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(self.config.scratch_dir),
+            creationflags=CREATION_FLAGS,
         )
         # Kernel-enforced: if the daemon process dies for any reason
         # (crash, kill -9, power loss) before it gets a chance to run
