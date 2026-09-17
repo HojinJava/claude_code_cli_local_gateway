@@ -47,3 +47,5 @@ pytest -v                                # 전체 테스트 (가짜 CLI 기반, 
 python scripts/daemon_ctl.py start       # 데몬 기동 (start|stop|restart|status)
 python -m claude_pool.daemon             # 포그라운드로 직접 실행
 ```
+
+@AGENTS.md
