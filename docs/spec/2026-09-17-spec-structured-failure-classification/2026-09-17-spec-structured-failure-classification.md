@@ -2,7 +2,7 @@
 description: 워커 실패를 CLI 문구 정규식이 아니라 stream-json 출력의 구조화된 값(result.api_error_status, assistant.error)으로 분류한다 — GitHub 이슈 #1
 status: approved
 revision: 1
-plan:
+plan: docs/plans/2026-09-17-structured-failure-classification/plan-index.md
 origin: brain
 architecture:
   - ../../architecture/design/00-overview.md

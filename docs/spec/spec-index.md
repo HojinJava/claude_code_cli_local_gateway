@@ -10,7 +10,7 @@ tags: [spec]
 | [워커 풀과 워커 수명주기](2026-09-17-spec-worker-pool/2026-09-17-spec-worker-pool.md) | implemented | 1 | migration | 없음 | `worker.py`, `pool.py`, `winjob.py` — 예열 워커 스폰, 1회용 정책, 오토스케일, 종료 드레인, `/health` stats |
 | [HTTP 게이트웨이 데몬 API](2026-09-17-spec-gateway-api/2026-09-17-spec-gateway-api.md) | implemented | 1 | migration | 없음 | `server.py`, `runner.py`, `jobs.py`, `errors.py`, `apidocs.py`, `config.py`, `daemon.py` — 라우트 계약, Host 가드, 실패 분류, 백그라운드 job, 자기 문서, 데몬 조립 |
 | [클라이언트와 운영·조사 스크립트](2026-09-17-spec-client-ops/2026-09-17-spec-client-ops.md) | implemented | 1 | migration | 없음 | `client.py`, `scripts/daemon_ctl.py`, `scripts/bench_cold_vs_warm.py`, `scripts/investigate_stream_json_timeout.py` |
-| [구조화된 값으로 워커 실패 분류하기](2026-09-17-spec-structured-failure-classification/2026-09-17-spec-structured-failure-classification.md) | approved | 1 | brain | 없음 | 이슈 #1 — `result.api_error_status`·`assistant.error`로 `rate_limited`·`not_authenticated`·`worker_failed` 분류, 문구 정규식 제거. 선행: gateway-api spec |
+| [구조화된 값으로 워커 실패 분류하기](2026-09-17-spec-structured-failure-classification/2026-09-17-spec-structured-failure-classification.md) | approved | 1 | brain | [plan](../plans/2026-09-17-structured-failure-classification/plan-index.md) | 이슈 #1 — `result.api_error_status`·`assistant.error`로 `rate_limited`·`not_authenticated`·`worker_failed` 분류, 문구 정규식 제거. 선행: gateway-api spec |
 
 migration spec 3개는 plan이 없으며, 변경하려면 `brain`에서 요구를 다시 구체화해야 make-plans의 계획 대상이 된다. 관련 구조 문서는 [architecture.md](../architecture/architecture.md)에서 찾는다.
 
