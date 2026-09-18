@@ -103,6 +103,69 @@ async def test_scale_down_shrinks_idle_workers_back_to_min(tmp_path, make_pool):
     assert pool.stats()["idle"] == pool.config.min_workers
 
 
+def drain_config(tmp_path, **overrides):
+    defaults = dict(
+        min_workers=2,
+        idle_scale_to_zero_sec=0.15,
+        idle_timeout_sec=10.0,  # the drain must not depend on the excess rule
+        scale_down_interval_sec=0.05,
+    )
+    defaults.update(overrides)
+    return make_config(tmp_path, **defaults)
+
+
+async def test_idle_workers_drain_to_zero_once_nothing_has_used_the_pool(tmp_path, make_pool):
+    pool = make_pool(drain_config(tmp_path))
+    await pool.start()
+    assert pool.stats()["idle"] == 2
+
+    await asyncio.sleep(0.4)
+
+    stats = pool.stats()
+    assert stats["idle"] == 0
+    assert stats["total"] == 0
+    # An empty pool is the intended resting state, not a sick one.
+    assert stats["healthy"] is True
+    assert stats["last_error"] is None
+
+
+async def test_a_drained_pool_serves_the_next_request_and_rewarms(tmp_path, make_pool):
+    pool = make_pool(drain_config(tmp_path))
+    await pool.start()
+    await asyncio.sleep(0.4)
+    assert pool.stats()["total"] == 0
+
+    worker = await pool.acquire()
+    assert worker.is_alive()
+    await pool.release(worker)
+
+    # Re-warming is gradual by design: release tops the pool up by one, so
+    # traffic that keeps coming climbs back to min_workers.
+    assert pool.stats()["total"] == 1
+
+
+async def test_a_worker_that_is_out_stops_the_drain(tmp_path, make_pool):
+    pool = make_pool(drain_config(tmp_path))
+    await pool.start()
+    worker = await pool.acquire()
+
+    await asyncio.sleep(0.4)
+
+    stats = pool.stats()
+    assert stats["busy"] == 1
+    assert stats["idle"] == 1  # the remaining idle worker is left alone
+    await pool.release(worker)
+
+
+async def test_setting_the_drain_to_zero_keeps_the_min_workers_floor(tmp_path, make_pool):
+    pool = make_pool(drain_config(tmp_path, idle_scale_to_zero_sec=0.0, idle_timeout_sec=0.05))
+    await pool.start()
+
+    await asyncio.sleep(0.4)
+
+    assert pool.stats()["idle"] == pool.config.min_workers
+
+
 async def test_scale_down_loop_kills_only_expired_excess_idle_workers(tmp_path, make_pool):
     # Sequential acquire()/release() can never leave more than min_workers
     # workers sitting in self._idle at once in this one-shot worker model

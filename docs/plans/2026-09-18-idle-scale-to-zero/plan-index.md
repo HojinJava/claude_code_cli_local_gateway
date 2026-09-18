@@ -1,7 +1,8 @@
 ---
-status: planned
+status: in-progress
+implementation-base: ffeaeada3353f3defa8d61a4dfc422198c0d092f
 spec: docs/spec/2026-09-18-spec-idle-scale-to-zero/2026-09-18-spec-idle-scale-to-zero.md
-spec-revision: 1
+spec-revision: 2
 acceptance-evidence: ./acceptance-evidence.md
 ---
 
@@ -10,6 +11,7 @@ acceptance-evidence: ./acceptance-evidence.md
 - spec: [유휴 시 워커를 0까지 줄이기](../../spec/2026-09-18-spec-idle-scale-to-zero/2026-09-18-spec-idle-scale-to-zero.md) (revision 1)
 - 출처: GitHub 이슈 #2
 - 수용 기준 증거: [acceptance-evidence.md](acceptance-evidence.md)
+- spec revision 2(2026-09-18): AC-003의 재예열 범위를 현재 `release` 동작(반납 1건당 1개 보충)으로 정정했다. 다른 AC·Task 배정·파일 책임은 그대로다.
 
 ## 설계 입력
 
@@ -30,12 +32,12 @@ acceptance-evidence: ./acceptance-evidence.md
 
 | Task | 목표 | 의존성 | 상태 |
 |---|---|---|---|
-| [task-001](task-001-idle-scale-to-zero-config.md) | 유휴 축소 기준 시간 설정을 `PoolConfig`에 추가한다 | 없음 | pending |
-| [task-002](task-002-pool-drains-to-zero-when-idle.md) | 풀이 유휴 조건에서 idle 워커를 0까지 줄이고, 처리 중에는 줄이지 않는다 | task-001 | pending |
-| [task-003](task-003-http-and-jobs-behaviour.md) | 축소 후 요청 처리·재예열과 job 실행 중 비축소를 HTTP 경로에서 확인한다 | task-002 | pending |
-| [task-004](task-004-ask-launcher.md) | 런처 `scripts/ask.py`를 추가한다 | task-001 | pending |
-| [task-005](task-005-docs-for-idle-policy.md) | README·`CLAUDE.md`에 정책과 런처를 적는다 | task-002, task-004 | pending |
-| [task-006](task-006-full-suite-and-static-checks.md) | 전체 테스트와 정적 확인 | task-001~task-005 | pending |
+| [task-001](task-001-idle-scale-to-zero-config.md) | 유휴 축소 기준 시간 설정을 `PoolConfig`에 추가한다 | 없음 | done |
+| [task-002](task-002-pool-drains-to-zero-when-idle.md) | 풀이 유휴 조건에서 idle 워커를 0까지 줄이고, 처리 중에는 줄이지 않는다 | task-001 | done |
+| [task-003](task-003-http-and-jobs-behaviour.md) | 축소 후 요청 처리·재예열과 job 실행 중 비축소를 HTTP 경로에서 확인한다 | task-002 | done |
+| [task-004](task-004-ask-launcher.md) | 런처 `scripts/ask.py`를 추가한다 | task-001 | done |
+| [task-005](task-005-docs-for-idle-policy.md) | README·`CLAUDE.md`에 정책과 런처를 적는다 | task-002, task-004 | done |
+| [task-006](task-006-full-suite-and-static-checks.md) | 전체 테스트와 정적 확인 | task-001~task-005 | done |
 
 실행 그룹: 기능 전체를 하나의 그룹으로 본다(task-001~task-006).
 

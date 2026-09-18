@@ -224,6 +224,25 @@ python -m claude_pool.daemon         # 포그라운드로 직접 실행 (Ctrl+C�
 
 예) 32GB RAM, 여유 RAM ≈ 28GB 기준: `(28 − 3) / 0.38` ≈ **약 65개**가 메모리 상한입니다. 여기에 CPU 여유까지 감안해서 `min_workers`는 훨씬 작게(기본 4 수준), `max_workers`는 버스트 상한으로 잡으세요.
 
+### 안 쓰는 동안에는 워커를 0으로 줄입니다 (유휴 축소)
+
+예열 워커는 대기만 해도 비용이 나가므로, **마지막 요청이 끝나고 60초 동안 아무도 쓰지 않으면 데몬이 idle 워커를 전부 종료합니다.** `min_workers`가 4여도 0까지 내려갑니다.
+
+| 값 | 기본 | 환경변수 |
+|---|---|---|
+| 유휴 축소 기준 시간 | 60초 | `CLAUDE_POOL_IDLE_SCALE_TO_ZERO_SEC` (`0`이면 끔) |
+
+- **데몬과 포트는 그대로 살아 있습니다.** 축소는 워커만 정리하므로 `curl`이든 클라이언트든 평소처럼 호출하면 됩니다.
+- **처리 중에는 줄이지 않습니다.** 워커가 하나라도 나가 있으면(동기 요청이든 실행 중인 job이든) 축소를 건너뜁니다.
+- **축소된 상태의 `/health`**: `idle: 0`, `total: 0`, `healthy: true`입니다. 빈 풀은 정상 상태이지 고장이 아닙니다.
+- **다시 채워지는 방식은 점진적입니다.** 요청이 오면 그때 워커를 띄우고, 반납할 때마다 1개씩 보충해 요청이 이어지면 `min_workers`까지 돌아옵니다.
+- **대가**: 60초 넘게 쉰 뒤의 첫 요청은 CLI 부팅 비용(약 1초)을 냅니다. 예열을 계속 유지하려면 기준 시간을 늘리거나 `0`으로 끄십시오.
+
+```bash
+CLAUDE_POOL_IDLE_SCALE_TO_ZERO_SEC=600 python -m claude_pool.daemon   # 10분으로 늘리기
+CLAUDE_POOL_IDLE_SCALE_TO_ZERO_SEC=0 python -m claude_pool.daemon     # 끄기(항상 예열 유지)
+```
+
 ### 예열이 실제로 아끼는 시간
 
 `claude -p`는 stdin을 받기 전에 부팅을 끝내고 대기합니다 — 위 표의 **CPU 1.47초 / 벽시계 약 1.1초**가 그것이고, 예열 풀이 요청 경로에서 걷어내는 게 정확히 이 구간입니다.
@@ -331,6 +350,21 @@ results = [client.wait(i) for i in ids]
 
 끝난 job은 `CLAUDE_POOL_JOB_RETENTION_SEC`(기본 600초) 동안만 보관되고, 저장된 job 수는 `CLAUDE_POOL_MAX_JOBS`(기본 500)로 제한됩니다 — 결과를 안 걷어가는 호출자가 있어도 메모리가 무한히 늘지 않게. **실행 중인 job은 절대 버려지지 않습니다.** 데몬이 종료되면 실행 중인 job은 전부 취소되고 워커도 함께 정리됩니다.
 
+
+### 한 줄로 물어보기 (런처)
+
+데몬이 떠 있든 아니든 프롬프트 하나를 보내고 답만 받고 싶을 때 씁니다. 데몬이 없으면 띄우고, 실패하면 분류(`kind`·`retryable`)를 함께 알려줍니다.
+
+```bash
+python scripts/ask.py "reply with the single word PONG"
+```
+
+어느 폴더에서나 부르려면 PATH에 있는 `~\.localin\claude-pool-ask.cmd`를 이렇게 만들어 두면 됩니다(저장소 밖 파일이라 버전 관리는 되지 않습니다).
+
+```bat
+@echo off
+python "D:\hojin\workspace\claude_code_cli_local_gateway\scriptssk.py" %*
+```
 
 ### 데몬이 스스로 제공하는 문서
 

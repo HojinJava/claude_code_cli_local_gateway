@@ -1,6 +1,6 @@
 ---
 task: 001
-status: pending
+status: done
 risk: low
 ---
 

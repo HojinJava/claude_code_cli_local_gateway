@@ -230,3 +230,28 @@ async def test_job_endpoints_are_behind_the_host_guard(client):
     evil = {"Host": "evil.example.com"}
     assert (await client.post("/jobs", json={"prompt": "x"}, headers=evil)).status == 403
     assert (await client.get("/jobs", headers=evil)).status == 403
+
+
+async def test_a_running_job_holds_off_the_idle_drain(tmp_path, make_pool):
+    # A job keeps its worker out of the pool, so the drain must not fire
+    # while it runs — and must not take the job's worker with it.
+    pool = make_pool(
+        make_config(
+            tmp_path, "--fake-delay-sec", "0.6",
+            min_workers=2,
+            idle_scale_to_zero_sec=0.1,
+            idle_timeout_sec=10.0,
+            scale_down_interval_sec=0.05,
+        )
+    )
+    await pool.start()
+    js = JobStore(pool, retention_sec=60.0, max_jobs=100)
+    job = js.submit("slow", timeout_sec=10.0)
+
+    await asyncio.sleep(0.3)
+    assert job.status == RUNNING
+    assert pool.stats()["busy"] == 1
+
+    await _await_terminal(js, job)
+    assert job.status == SUCCEEDED
+    await js.shutdown()

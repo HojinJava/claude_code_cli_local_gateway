@@ -1,6 +1,6 @@
 ---
 task: 006
-status: pending
+status: done
 risk: low
 ---
 

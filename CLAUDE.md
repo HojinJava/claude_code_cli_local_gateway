@@ -28,6 +28,8 @@
 - **`model`은 요청별로 override하지 않는다.** 데몬 하나당 모델 하나로 고정한다 (`PoolConfig.model`). 다른 모델이 필요하면 다른 포트로 데몬을 하나 더 띄운다.
 - **워커는 1회용이다.** 절대 재사용하지 않는다 — 컨텍스트 격리(독립 테넌트)가 이 프로젝트의 핵심 요구사항이다.
 - **`/generate`와 `/health`는 `Host` 헤더가 loopback 리터럴일 때만 응답한다** (`server.require_loopback_host`). loopback 바인딩만으로는 DNS rebinding을 못 막는다 — 인증 계층을 안 쓰는 대신 이 미들웨어가 그 자리를 대신하므로 제거하지 말 것.
+- **축소의 하한은 `min_workers`가 아니다.** 마지막 반납 이후 `idle_scale_to_zero_sec`(기본 60초)가 지나면 idle 워커를 전부 종료해 0까지 내려간다(`pool._scale_down_loop`). 데몬과 포트는 유지하며, 다음 요청이 온디맨드로 스폰한다. `0`이면 이 동작을 끄고 예전처럼 `min_workers`를 하한으로 둔다.
+- **워커가 나가 있으면 축소하지 않는다.** 판정은 `self._total == len(self._idle)`로 한다 — 동기 요청이든 실행 중인 job이든 배포된 워커가 하나라도 있으면 그 주기는 건너뛴다. 이 조건을 빼면 실행 중인 작업의 워커까지 정리 대상이 된다.
 - **데몬은 실패한 요청을 자동 재시도하지 않는다.** 재시도는 구독 쿼터를 쓰는 행위라서, 분류 결과(`kind`/`retryable`/`Retry-After`)만 내려주고 판단은 호출자에게 맡긴다.
 - **`/health`는 카운터가 아니라 liveness를 보고해야 한다.** `idle`(카운터)과 `idle_alive`(실제 생존)를 둘 다 노출하는 이유는, 예열해둔 `claude`가 전부 죽어도 카운터만 보면 정상으로 보이기 때문이다.
 - **`Worker.is_alive()`는 보증이 아니라 best-effort 필터다.** `returncode`는 asyncio가 자식을 수확한 뒤에야 세팅되므로, 방금 죽은 워커는 살아있다고 보고되고 그대로 배포된다. 실제 오류는 `run()`이 exit code와 stderr로 드러낸다.
