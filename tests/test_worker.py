@@ -34,23 +34,54 @@ async def test_run_returns_parsed_result(tmp_path):
     await worker.start()
     result = await worker.run("hello", timeout_sec=5.0)
     assert result == {
-        "text": "hello", "duration_ms": 1, "is_error": False, "subtype": "",
+        "text": "hello",
+        "duration_ms": 1,
+        "is_error": False,
+        "subtype": "success",
+        "api_error_status": None,
+        "api_error_code": "",
     }
     assert not worker.is_alive()
 
 
-async def test_run_raises_on_error_flagged_result(tmp_path):
-    worker = Worker(make_config(tmp_path, "--fake-mode", "error"))
+async def test_run_hands_back_the_structured_failure_values(tmp_path):
+    # These two fields are the whole input to classification; if the worker
+    # drops them the server has nothing left but wording.
+    worker = Worker(make_config(
+        tmp_path, "--fake-mode", "error",
+        "--fake-api-error-status", "429",
+        "--fake-api-error-code", "rate_limit_error",
+    ))
     await worker.start()
     result = await worker.run("hello", timeout_sec=5.0)
     assert result["is_error"] is True
+    assert result["api_error_status"] == 429
+    assert result["api_error_code"] == "rate_limit_error"
+
+
+async def test_a_result_line_is_trusted_even_when_the_cli_exits_nonzero(tmp_path):
+    # Measured against Claude Code 2.1.276: a failed turn exits 1 *and* prints
+    # a complete result line, with nothing on stderr. Raising on the exit code
+    # before parsing would throw away every structured value there is.
+    worker = Worker(make_config(
+        tmp_path, "--fake-mode", "error",
+        "--fake-api-error-status", "401",
+        "--fake-exit-code", "1",
+    ))
+    await worker.start()
+    result = await worker.run("hello", timeout_sec=5.0)
+    assert result["is_error"] is True
+    assert result["api_error_status"] == 401
 
 
 async def test_run_raises_worker_error_on_crash(tmp_path):
     worker = Worker(make_config(tmp_path, "--fake-mode", "crash"))
     await worker.start()
-    with pytest.raises(WorkerError):
+    with pytest.raises(WorkerError) as exc:
         await worker.run("hello", timeout_sec=5.0)
+    # No result line: the exit code and stderr are all the caller gets.
+    assert "code 1" in str(exc.value)
+    assert "boom" in str(exc.value)
 
 
 async def test_run_raises_timeout_and_kills_process(tmp_path):

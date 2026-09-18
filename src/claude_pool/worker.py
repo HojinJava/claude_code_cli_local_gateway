@@ -89,13 +89,41 @@ class Worker:
             await self.kill()
             raise
 
-        if self._proc.returncode != 0:
+        result_line, api_error_code = self._parse_stream(stdout_data)
+
+        # Deliberately after parsing, not before: a failed turn exits 1 and
+        # *still* prints a complete result line, with nothing on stderr
+        # (measured, Claude Code 2.1.276). Raising on the exit code first
+        # would discard every structured value the classifier needs and
+        # report a bare "exited with code 1" instead.
+        if result_line is None:
             raise WorkerError(
-                f"worker exited with code {self._proc.returncode}: "
-                f"{stderr_data.decode('utf-8', errors='replace')}"
+                f"worker exited with code {self._proc.returncode} without a "
+                f"'result' line: {stderr_data.decode('utf-8', errors='replace')}"
             )
 
+        return {
+            "text": result_line.get("result", ""),
+            "duration_ms": result_line.get("duration_ms", 0),
+            "is_error": bool(result_line.get("is_error", False)),
+            "subtype": result_line.get("subtype", ""),
+            # The two values errors.classify reads. `api_error_status` is the
+            # HTTP status the API returned (null when the CLI never got that
+            # far); `api_error_code` is the CLI's own code for the failure,
+            # which is all there is in that null case.
+            "api_error_status": result_line.get("api_error_status"),
+            "api_error_code": api_error_code,
+        }
+
+    @staticmethod
+    def _parse_stream(stdout_data: bytes) -> tuple[dict | None, str]:
+        """Pull the result line and the API error code out of stream-json.
+
+        The error code rides on an assistant line that precedes the result
+        line, so both come out of one pass.
+        """
         result_line = None
+        api_error_code = ""
         # errors="replace" so a stray non-UTF-8 byte surfaces as a WorkerError
         # the server can classify, not a UnicodeDecodeError that becomes a 500.
         for line in stdout_data.decode("utf-8", errors="replace").splitlines():
@@ -106,19 +134,14 @@ class Worker:
                 payload = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if payload.get("is_api_error_message") and isinstance(
+                payload.get("error"), str
+            ):
+                api_error_code = payload["error"]
             if payload.get("type") == "result":
                 result_line = payload
                 break
-
-        if result_line is None:
-            raise WorkerError("no 'result' line found in worker stream-json output")
-
-        return {
-            "text": result_line.get("result", ""),
-            "duration_ms": result_line.get("duration_ms", 0),
-            "is_error": bool(result_line.get("is_error", False)),
-            "subtype": result_line.get("subtype", ""),
-        }
+        return result_line, api_error_code
 
     async def kill(self) -> None:
         if self._proc is not None and self._proc.returncode is None:

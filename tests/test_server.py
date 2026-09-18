@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from claude_pool.config import PoolConfig
+from claude_pool.errors import DEFAULT_RETRY_AFTER_SEC
 from claude_pool.server import create_app
 
 FAKE_CLI = Path(__file__).parent / "fixtures" / "fake_claude_cli.py"
@@ -135,46 +136,101 @@ async def test_health_reports_dead_prewarmed_workers_as_not_alive(
     assert data["healthy"] is False
 
 
-async def test_generate_classifies_rate_limit_as_retryable_429(
-    aiohttp_client, tmp_path, make_pool
-):
+async def _failing_client(aiohttp_client, tmp_path, make_pool, *fake_args):
+    """A daemon whose worker fails with the given structured values."""
     pool = make_pool(
         make_config(
             tmp_path,
-            claude_cmd=[
-                sys.executable, str(FAKE_CLI),
-                "--fake-mode", "error",
-                "--fake-error-text", "Claude AI usage limit reached, try again in 30 seconds",
-            ],
+            claude_cmd=[sys.executable, str(FAKE_CLI), "--fake-mode", "error", *fake_args],
         )
     )
     await pool.start()
-    client = await aiohttp_client(create_app(pool))
+    return await aiohttp_client(create_app(pool))
+
+
+@pytest.mark.parametrize("status", ["429", "529"])
+async def test_generate_classifies_rate_limit_status_as_retryable_429(
+    aiohttp_client, tmp_path, make_pool, status
+):
+    client = await _failing_client(
+        aiohttp_client, tmp_path, make_pool, "--fake-api-error-status", status
+    )
     resp = await client.post("/generate", json={"prompt": "hello"})
 
     assert resp.status == 429
-    assert resp.headers["Retry-After"] == "30"
+    # No wait value exists anywhere in the CLI's output (measured), so the
+    # caller always gets the conservative floor rather than a parsed guess.
+    assert resp.headers["Retry-After"] == str(DEFAULT_RETRY_AFTER_SEC)
     data = await resp.json()
     assert data["kind"] == "rate_limited"
     assert data["retryable"] is True
     assert data["duration_ms"] == 1
 
 
-async def test_generate_classifies_logged_out_cli_as_not_retryable(
+@pytest.mark.parametrize("status", ["401", "403"])
+async def test_generate_classifies_auth_status_as_not_retryable(
+    aiohttp_client, tmp_path, make_pool, status
+):
+    client = await _failing_client(
+        aiohttp_client, tmp_path, make_pool, "--fake-api-error-status", status
+    )
+    resp = await client.post("/generate", json={"prompt": "hello"})
+
+    assert resp.status == 503
+    data = await resp.json()
+    assert data["kind"] == "not_authenticated"
+    assert data["retryable"] is False
+    assert "Retry-After" not in resp.headers
+
+
+async def test_wording_cannot_turn_a_server_error_into_a_rate_limit(
     aiohttp_client, tmp_path, make_pool
 ):
-    pool = make_pool(
-        make_config(
-            tmp_path,
-            claude_cmd=[
-                sys.executable, str(FAKE_CLI),
-                "--fake-mode", "crash",
-                "--fake-error-text", "Invalid API key - please run /login",
-            ],
-        )
+    # The regression this issue exists for: the old classifier read this text
+    # and answered 429 + "retry in 30s", telling the caller to retry a failure
+    # that will never clear on its own.
+    client = await _failing_client(
+        aiohttp_client, tmp_path, make_pool,
+        "--fake-api-error-status", "500",
+        "--fake-error-text", "rate limit exceeded (429) - usage limit reached, "
+                             "try again in 30 seconds",
     )
-    await pool.start()
-    client = await aiohttp_client(create_app(pool))
+    resp = await client.post("/generate", json={"prompt": "hello"})
+
+    assert resp.status == 502
+    data = await resp.json()
+    assert data["kind"] == "worker_failed"
+    assert data["retryable"] is False
+    assert "Retry-After" not in resp.headers
+    # The wording is still handed to the human reading the response.
+    assert "rate limit exceeded" in data["error"]
+
+
+async def test_wording_cannot_talk_a_rate_limit_out_of_being_one(
+    aiohttp_client, tmp_path, make_pool
+):
+    client = await _failing_client(
+        aiohttp_client, tmp_path, make_pool,
+        "--fake-api-error-status", "429",
+        "--fake-error-text", "something entirely unremarkable happened",
+    )
+    resp = await client.post("/generate", json={"prompt": "hello"})
+
+    assert resp.status == 429
+    assert (await resp.json())["kind"] == "rate_limited"
+
+
+async def test_generate_classifies_a_logged_out_cli_with_no_http_status(
+    aiohttp_client, tmp_path, make_pool
+):
+    # Measured: a CLI with no credentials fails before it reaches the API, so
+    # api_error_status is null and the error code is the only thing that says
+    # "a human has to log in". Without it this lands on worker_failed.
+    client = await _failing_client(
+        aiohttp_client, tmp_path, make_pool,
+        "--fake-api-error-code", "authentication_failed",
+        "--fake-error-text", "Not logged in · Please run /login",
+    )
     resp = await client.post("/generate", json={"prompt": "hello"})
 
     assert resp.status == 503
@@ -186,6 +242,28 @@ async def test_generate_classifies_logged_out_cli_as_not_retryable(
     # and the reason is now visible on /health instead of vanishing
     health = await (await client.get("/health")).json()
     assert "login" in health["last_error"]
+
+
+async def test_a_crashed_worker_with_no_result_line_is_worker_failed(
+    aiohttp_client, tmp_path, make_pool
+):
+    # Nothing structured survives a process that never printed a result line,
+    # so the daemon says so rather than inventing a kind from the stderr text.
+    pool = make_pool(
+        make_config(
+            tmp_path,
+            claude_cmd=[
+                sys.executable, str(FAKE_CLI), "--fake-mode", "crash",
+                "--fake-error-text", "Invalid API key - please run /login",
+            ],
+        )
+    )
+    await pool.start()
+    client = await aiohttp_client(create_app(pool))
+    resp = await client.post("/generate", json={"prompt": "hello"})
+
+    assert resp.status == 502
+    assert (await resp.json())["kind"] == "worker_failed"
 
 
 async def test_successful_run_clears_the_last_error(client):

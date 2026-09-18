@@ -32,14 +32,21 @@ FAILURE_KINDS = [
     {"kind": "pool_unavailable", "status": 503, "retryable": True,
      "meaning": "All workers busy; the same request succeeds once one frees up."},
     {"kind": "rate_limited", "status": 429, "retryable": True,
-     "meaning": f"Subscription rate/usage limit. Honour Retry-After "
-                f"(default {DEFAULT_RETRY_AFTER_SEC}s)."},
+     "meaning": f"Subscription rate/usage limit: the CLI reported "
+                f"api_error_status 429 or 529. The CLI gives no reset time, "
+                f"so Retry-After is always {DEFAULT_RETRY_AFTER_SEC}s."},
     {"kind": "timeout", "status": 504, "retryable": True,
-     "meaning": "The worker exceeded timeout_sec."},
+     "meaning": "The worker exceeded timeout_sec. Note the CLI retries API "
+                "errors internally for up to ~3 minutes, so a real rate "
+                "limit can surface here instead of as rate_limited."},
     {"kind": "not_authenticated", "status": 503, "retryable": False,
-     "meaning": "The `claude` CLI needs a human to log in again. Do not retry."},
+     "meaning": "The `claude` CLI needs a human to log in again: "
+                "api_error_status 401/403, or the CLI's own "
+                "authentication_failed error code. Do not retry."},
     {"kind": "worker_failed", "status": 502, "retryable": False,
-     "meaning": "Any other worker failure; the message carries the CLI's stderr."},
+     "meaning": "Any other worker failure, including one the CLI reported no "
+                "structured values for; the message carries the CLI's own "
+                "wording, which never decides the kind."},
     {"kind": "forbidden_host", "status": 403, "retryable": False,
      "meaning": "Host header was not a loopback literal (DNS-rebinding guard)."},
 ]
