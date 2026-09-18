@@ -21,6 +21,8 @@ running  pid=109600  http://127.0.0.1:8756
 
 **문서: <http://127.0.0.1:8756/docs>** — 데몬이 자기 사용법을 직접 서빙합니다 (브라우저용 HTML, `GET /`은 같은 내용의 JSON).
 
+외부 프로그램에서 붙일 때 필요한 요청·응답 스키마와 접근 제약은 [HTTP API 레퍼런스](#http-api-레퍼런스)에 정리해 두었습니다.
+
 호출해 보기:
 
 ```bash
@@ -331,7 +333,7 @@ curl -s http://127.0.0.1:8756/jobs/gi2DiEp1JsBEInKq
 | `POST /jobs` | 제출. 202 + `job_id` 즉시 반환 |
 | `GET /jobs/{job_id}` | 폴링. **항상 200** — 실패한 job도 200이고 `status`로 판단한다 (조회 자체는 성공했으므로) |
 | `GET /jobs` | 목록, 최신순 |
-| `DELETE /jobs/{job_id}` | 실행 중인 job 취소(워커까지 죽임) 또는 끝난 job 삭제 |
+| `DELETE /jobs/{job_id}` | 실행 중인 job 취소(워커까지 죽임). 끝난 job은 상태만 돌려주며 보관 중인 결과를 지우지는 않는다 |
 
 `status`는 `running` / `succeeded` / `failed` / `cancelled`. `failed`인 경우 동기 호출과 동일한 `error`/`kind`/`retryable`/`retry_after_sec`가 들어 있습니다.
 
@@ -381,6 +383,243 @@ curl -s http://127.0.0.1:8756/          # 이것만 보면 사용법이 다 나�
 start http://127.0.0.1:8756/docs        # 브라우저로 열기
 ```
 
+
+## HTTP API 레퍼런스
+
+외부 프로그램에서 이 게이트웨이를 호출할 때 필요한 계약을 한곳에 모았습니다. 왜 이런 설계가 되었는지는 위 [아키텍처](#아키텍처) 절이 설명하고, 여기에는 주고받는 값만 적습니다.
+
+데몬이 떠 있다면 이 절보다 `GET /`(JSON)과 `GET /docs`(HTML)가 정본입니다. 그쪽은 실행 중인 데몬의 살아있는 설정에서 생성되므로 모델·워커 수·타임아웃이 실제 값으로 나옵니다.
+
+### 접근 조건
+
+| 항목 | 값 |
+|---|---|
+| 베이스 URL | `http://127.0.0.1:8756` (포트는 `CLAUDE_POOL_PORT`로 변경) |
+| 인증 | 없음 |
+| Content-Type | 요청·응답 모두 `application/json` |
+| 도달 범위 | 같은 머신의 loopback 인터페이스뿐 |
+
+호출하는 쪽을 만들기 전에 세 가지 제약을 확인하십시오.
+
+1. **데몬은 `127.0.0.1`에만 바인딩합니다.** `CLAUDE_POOL_HOST`에 loopback이 아닌 주소를 주면 기동 시점에 실패합니다. 다른 PC나 사내망에서 이 엔드포인트를 호출할 방법은 없으며, 그것이 인증 계층을 두지 않은 전제입니다.
+2. **`Host` 헤더가 loopback 리터럴이어야 합니다.** `127.0.0.1`, `localhost`, `::1`은 통과하고 그 밖의 호스트명은 403 `forbidden_host`로 거절됩니다. 베이스 URL로 그냥 호출하면 HTTP 클라이언트가 Host를 알아서 채우므로 신경 쓸 일이 없지만, 리버스 프록시를 앞에 두거나 Host를 직접 덮어쓰면 여기서 막힙니다.
+3. **별도 네트워크 네임스페이스에서는 도달하지 못합니다.** 컨테이너나 WSL2 안에서 보는 `127.0.0.1`은 그 환경 자신이라서 호스트의 데몬에 닿지 않습니다. 호출하는 쪽을 호스트의 네이티브 프로세스로 두십시오. 이 제약을 우회하려고 프록시로 감싸거나 외부 인터페이스에 노출하면, 인증이 없는 API와 함께 사용자의 구독 쿼터가 그대로 열립니다.
+
+### 엔드포인트 요약
+
+| 메서드 | 경로 | 용도 | 성공 상태 |
+|---|---|---|---|
+| `POST` | `/generate` | 프롬프트 1건을 보내고 완성될 때까지 기다림 | 200 |
+| `POST` | `/jobs` | 프롬프트 1건을 백그라운드로 제출하고 id만 받음 | 202 |
+| `GET` | `/jobs/{job_id}` | job 1건 조회(폴링) | 200 |
+| `GET` | `/jobs` | job 목록, 제출 시각 역순 | 200 |
+| `DELETE` | `/jobs/{job_id}` | 실행 중인 job 취소 | 200 |
+| `GET` | `/health` | 풀 상태와 최근 실패 이유 | 200 |
+| `GET` | `/` | 데몬 자기소개(JSON) | 200 |
+| `GET` | `/docs` | 같은 내용의 HTML | 200 |
+| `GET` | `/openapi.json` | OpenAPI 3.1 스펙 | 200 |
+
+### POST /generate
+
+완성될 때까지 HTTP 연결을 붙잡습니다. 몇 분이 걸릴 수 있는 생성이면 `POST /jobs`를 쓰십시오.
+
+요청 body는 JSON 객체여야 합니다.
+
+| 필드 | 타입 | 필수 | 기본값 |
+|---|---|---|---|
+| `prompt` | string | 필수 | 없음 (빈 문자열은 400) |
+| `timeout_sec` | number | 선택 | `CLAUDE_POOL_TIMEOUT_SEC` (기본 120.0) |
+
+```bash
+curl -s -X POST http://127.0.0.1:8756/generate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "reply with the single word PONG", "timeout_sec": 30}'
+```
+
+성공하면 200과 함께 두 필드가 옵니다. `duration_ms`는 CLI가 보고한 생성 소요 시간입니다.
+
+```json
+{"text": "PONG", "duration_ms": 1078}
+```
+
+### POST /jobs
+
+body 형식은 `/generate`와 완전히 같습니다. 워커 수명주기도 같고, 누가 기다리느냐만 다릅니다.
+
+202와 함께 `Location` 헤더(`/jobs/{job_id}`)가 돌아옵니다. body는 다음과 같습니다.
+
+```json
+{
+  "job_id": "gi2DiEp1JsBEInKq",
+  "status": "running",
+  "prompt_preview": "reply with the single word PONG",
+  "created_at": 1758168123.45,
+  "finished_at": null,
+  "url": "/jobs/gi2DiEp1JsBEInKq"
+}
+```
+
+`job_id`는 16자 URL-safe 문자열이며 순번이 아닙니다. 인증 계층이 없어서, 같은 머신의 다른 프로세스가 id를 세어 남의 응답을 읽지 못하도록 추측 불가능하게 만들었습니다.
+
+### GET /jobs/{job_id}
+
+**job이 실패했어도 200입니다.** 조회 자체는 성공했고 job의 결과는 body의 `status`에 있습니다. 폴링하는 쪽이 상태 코드를 두 겹으로 해석하지 않아도 됩니다. 존재하지 않는 id만 404입니다.
+
+모든 상태에 공통으로 들어가는 필드입니다.
+
+| 필드 | 타입 | 설명 |
+|---|---|---|
+| `job_id` | string | 제출 때 받은 id |
+| `status` | string | `running` / `succeeded` / `failed` / `cancelled` |
+| `prompt_preview` | string | 프롬프트 앞 80자. 목록에서 job을 구분하기 위한 값이며 전체 프롬프트를 보관하지 않습니다 |
+| `created_at` | number | 제출 시각, Unix epoch 초 |
+| `finished_at` | number 또는 null | 종료 시각. 아직 실행 중이면 `null` |
+
+상태에 따라 붙는 필드입니다.
+
+| `status` | 추가 필드 |
+|---|---|
+| `running` | 없음 |
+| `succeeded` | `text`, `duration_ms` |
+| `failed` | `error`, `kind`, `retryable`, 그리고 값이 있을 때만 `retry_after_sec`·`duration_ms` |
+| `cancelled` | 없음 |
+
+`failed`의 `kind`·`retryable`·`retry_after_sec`는 동기 호출의 실패 응답과 의미가 같습니다. 아래 [실패 응답](#실패-응답) 절을 참고하십시오.
+
+### GET /jobs
+
+```json
+{"jobs": [{ "job_id": "...", "status": "...", "prompt_preview": "...", "created_at": 0, "finished_at": null }]}
+```
+
+배열 원소는 `GET /jobs/{job_id}`와 같은 객체이고, `created_at` 역순(최신 먼저)으로 정렬됩니다. 보관 기간이 지난 job은 이 시점에 정리되어 목록에서 빠집니다.
+
+### DELETE /jobs/{job_id}
+
+실행 중인 job을 취소합니다. **워커 프로세스를 실제로 종료한 뒤에 응답합니다** — 그러지 않으면 "취소됨"이 사실이 아니라 주장이 됩니다. 응답은 200과 취소된 job 객체이고, 없는 id는 404입니다.
+
+이미 끝난 job에 호출하면 상태를 그대로 돌려줍니다. 이 엔드포인트는 보관 중인 결과를 지우지 않으며, 정리는 `CLAUDE_POOL_JOB_RETENTION_SEC`와 `CLAUDE_POOL_MAX_JOBS`가 담당합니다.
+
+### GET /health
+
+풀의 상태와 가장 최근 실패 이유가 들어 있습니다. 호출하는 쪽에서 게이트웨이가 쓸 수 있는 상태인지 판단할 때 씁니다.
+
+```json
+{
+  "min_workers": 4, "max_workers": 30,
+  "total": 4, "idle": 4, "idle_alive": 4, "busy": 0,
+  "healthy": true,
+  "last_spawn_error": null, "last_error": null,
+  "jobs": {"total": 0, "running": 0}
+}
+```
+
+| 필드 | 의미 |
+|---|---|
+| `total` | 풀이 들고 있는 워커 수 |
+| `idle` | 대기 중 워커 수(단순 카운터) |
+| `idle_alive` | 그중 `claude` 프로세스가 실제로 살아있는 수 |
+| `busy` | `total - idle` |
+| `healthy` | `idle`과 `idle_alive`가 같을 때 참 |
+| `last_spawn_error` | 마지막 워커 스폰 실패 메시지 |
+| `last_error` | 마지막 요청 실패 메시지 |
+| `jobs.total` / `jobs.running` | 보관 중인 job 수 / 실행 중인 job 수 |
+
+판단할 때 주의할 점이 둘 있습니다.
+
+- **`total: 0`은 고장이 아닙니다.** 60초 넘게 아무도 쓰지 않으면 워커를 0까지 줄이는 것이 정상 동작입니다. 이때도 `healthy`는 `true`이고 요청은 그대로 받습니다.
+- **`idle`과 `idle_alive`가 벌어지면 예열해둔 프로세스가 죽고 있다는 뜻입니다.** 로그아웃이나 쿼터 소진이 대표적인 원인이므로 `last_error`를 함께 읽으십시오.
+
+### 실패 응답
+
+실패는 두 종류로 나뉘고 body 모양이 다릅니다.
+
+**요청 자체가 잘못된 경우(400)** 는 `error`만 돌아옵니다. `kind`와 `retryable`이 없으므로 파싱하는 쪽에서 이 둘의 존재를 전제하면 안 됩니다.
+
+```json
+{"error": "'prompt' is required"}
+```
+
+`prompt`가 없거나 문자열이 아니거나 빈 문자열일 때, body가 JSON 객체가 아닐 때, `timeout_sec`가 숫자가 아닐 때 여기에 해당합니다.
+
+**실행 중 실패한 경우**는 분류 결과가 함께 옵니다.
+
+```json
+{"error": "...", "kind": "rate_limited", "retryable": true, "duration_ms": 812}
+```
+
+`duration_ms`는 값이 있을 때만 포함됩니다. `rate_limited`일 때는 `Retry-After` 헤더도 함께 옵니다.
+
+| 상황 | HTTP | `kind` | `retryable` |
+|---|---|---|---|
+| 워커를 못 구함(큐 적체) | 503 | `pool_unavailable` | ✅ |
+| 레이트 리밋 / 사용량 한도 / overloaded | 429 (+ `Retry-After`) | `rate_limited` | ✅ |
+| 요청 타임아웃 | 504 | `timeout` | ✅ |
+| CLI 로그인 만료 / 크레딧 부족 | 503 | `not_authenticated` | ❌ |
+| 그 외 워커 실패 | 502 | `worker_failed` | ❌ |
+| `Host` 헤더가 loopback이 아님 | 403 | `forbidden_host` | ❌ |
+
+호출하는 쪽에서 반드시 지켜야 할 것이 둘 있습니다.
+
+- **데몬은 자동으로 재시도하지 않습니다.** 재시도는 사용자의 구독 쿼터를 쓰는 행위라서 판단을 호출자에게 넘깁니다. `retryable`이 참인 실패만 재시도하고, `Retry-After`나 `retry_after_sec`가 있으면 그만큼 기다리십시오.
+- **`not_authenticated`는 재시도로 풀리지 않습니다.** 사람이 `claude` CLI에 다시 로그인해야 하므로, 이 분류를 받으면 재시도 대신 운영자에게 알리는 경로로 보내십시오.
+
+분류는 CLI가 내보낸 사람이 읽는 메시지의 문자열 매칭이라 best-effort입니다. 못 알아본 실패는 `worker_failed`(502)로 떨어집니다.
+
+### 다른 언어에서 호출하기
+
+파이썬이라면 동봉된 클라이언트가 재시도 판단에 필요한 값을 예외로 올려줍니다(위 [Python에서 호출하기](#python에서-호출하기) 절). 그 밖의 언어에서는 JSON을 직접 주고받으면 됩니다.
+
+Node.js(18 이상, 의존성 없음):
+
+```js
+const BASE = "http://127.0.0.1:8756";
+
+async function generate(prompt, timeoutSec = 120) {
+  const res = await fetch(`${BASE}/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, timeout_sec: timeoutSec }),
+  });
+  const body = await res.json();
+  if (!res.ok) {
+    const err = new Error(body.error ?? `HTTP ${res.status}`);
+    err.kind = body.kind;                    // 400이면 undefined
+    err.retryable = body.retryable ?? false;
+    err.retryAfterSec = Number(res.headers.get("Retry-After")) || undefined;
+    throw err;
+  }
+  return body.text;
+}
+```
+
+긴 생성을 백그라운드로 던지고 나중에 걷는 형태입니다.
+
+```js
+async function submit(prompt) {
+  const res = await fetch(`${BASE}/jobs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+  return (await res.json()).job_id;
+}
+
+async function wait(jobId, intervalMs = 1000) {
+  while (true) {
+    const job = await (await fetch(`${BASE}/jobs/${jobId}`)).json();
+    if (job.status === "succeeded") return job.text;
+    if (job.status !== "running") throw new Error(job.error ?? job.status);
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+```
+
+배치로 호출할 계획이라면 미리 확인할 것이 셋 있습니다.
+
+- **동시성 상한은 `CLAUDE_POOL_MAX_WORKERS`(기본 30)입니다.** 그보다 많이 밀어 넣으면 대기하다가 `CLAUDE_POOL_ACQUIRE_TIMEOUT_SEC`(기본 60초)를 넘겼을 때 503 `pool_unavailable`이 납니다.
+- **대화 기억이 없습니다.** 요청마다 새 워커가 처리하는 독립 테넌트 설계이므로 필요한 맥락은 프롬프트에 전부 넣어야 합니다.
+- **도구 사용이 꺼져 있습니다.** 워커는 파일 읽기·코드 실행·웹 접근을 하지 못하는 순수 텍스트 생성 전용입니다. 스트리밍도 없어서 완성된 응답이 한 번에 옵니다.
 
 ## 테스트
 
