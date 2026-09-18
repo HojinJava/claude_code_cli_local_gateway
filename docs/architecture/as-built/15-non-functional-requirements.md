@@ -12,15 +12,18 @@ status: as-built
 
 | 항목 | 값(코드 폴백) | 설정 키 | 적용 위치 |
 |---|---|---|---|
-| 상시 예열 수(하한) | 4 | `CLAUDE_POOL_MIN_WORKERS` | 기동 예열 `pool.py:42`, 반납 시 보충 `pool.py:193`, 축소 하한 `pool.py:205` |
-| 동시 워커 상한 | 30 | `CLAUDE_POOL_MAX_WORKERS` | 증가 `pool.py:149`, `pool.py:172`, 대기 수요 보충 `pool.py:194` |
-| 증가 단위 | 대기 루프 반복당 1개 예약, 스폰은 락 안에서 1개씩 | — | `pool.py:117-119`, `pool.py:149-150`, `pool.py:169-178` |
-| idle 축소 주기 | 30.0초 | `CLAUDE_POOL_SCALE_DOWN_INTERVAL_SEC` | `pool.py:202` |
-| idle 축소 기준 | 60.0초(스폰 시각 기준 경과) | `CLAUDE_POOL_IDLE_TIMEOUT_SEC` | `pool.py:211`, 기준 시각 `worker.py:62` |
-| 워커 재사용 | 없음(요청 1건당 워커 1개 소모) | — | `pool.py:185-192` |
+| 상시 예열 수 | 4 | `CLAUDE_POOL_MIN_WORKERS` | 기동 예열 `pool.py:47`, 반납 시 1개 보충 `pool.py:199`, 초과분 축소 하한 `pool.py:223`. 유휴 축소가 발동하면 이 하한은 적용되지 않는다 |
+| 동시 워커 상한 | 30 | `CLAUDE_POOL_MAX_WORKERS` | 증가 `pool.py:154`, `pool.py:177`, 대기 수요 보충 `pool.py:200` |
+| 증가 단위 | 대기 루프 반복당 1개 예약, 스폰은 락 안에서 1개씩 | — | `pool.py:122-124`, `pool.py:154-155`, `pool.py:174-183` |
+| idle 축소 주기 | 30.0초 | `CLAUDE_POOL_SCALE_DOWN_INTERVAL_SEC` | `pool.py:208` |
+| 초과분 축소 기준 | 60.0초(스폰 시각 기준 경과) | `CLAUDE_POOL_IDLE_TIMEOUT_SEC` | `pool.py:229`, 기준 시각 `worker.py:62` |
+| 유휴 축소 기준(0까지) | 60.0초(마지막 반납 이후 경과) | `CLAUDE_POOL_IDLE_SCALE_TO_ZERO_SEC` | 판정 `pool.py:216-224`, 기준 시각 기록 `pool.py:40`·`pool.py:198`. `0`이면 판정이 항상 거짓이라 기존 하한이 유지된다 |
+| 워커 재사용 | 없음(요청 1건당 워커 1개 소모) | — | `pool.py:190-198` |
 | 모델 | 데몬당 1개(기본 `"sonnet"`) | `CLAUDE_POOL_MODEL` | `worker.py:45` |
 
 - 수평 확장은 코드상 다른 포트의 데몬을 추가로 띄우는 형태만 지원 구조가 있다(포트별 pid 파일 `daemon.py:16-23`). 데몬 간 부하 분산 코드는 없다.
+- **유휴 상태의 하한은 0이다.** 마지막 반납 이후 `idle_scale_to_zero_sec`가 지나고 배포된 워커가 없으면(`self._total == len(self._idle)`) 축소 루프가 idle 워커를 전부 종료한다(`pool.py:216-232`). 데몬 프로세스와 바인딩은 유지되며, 다음 요청은 기존 획득 경로가 온디맨드로 스폰한다. 배포된 워커가 하나라도 있으면 그 주기는 건너뛰므로 실행 중인 요청·job의 워커는 대상이 아니다.
+- 축소 뒤 재예열은 점진적이다. `release`가 반납 1건당 1개만 보충한다(`pool.py:199-204`).
 - `min_workers <= max_workers` 검증은 없다([03-configuration](03-configuration.md#검증)).
 
 ## 타임아웃
@@ -28,8 +31,8 @@ status: as-built
 | 항목 | 값 | 설정 키 | 적용 위치 |
 |---|---|---|---|
 | 요청 실행 기본 타임아웃 | 120.0초 | `CLAUDE_POOL_TIMEOUT_SEC`, 요청별 `timeout_sec` | `server.py:93`, `worker.py:84-87` |
-| 워커 획득 대기 | 60.0초 | `CLAUDE_POOL_ACQUIRE_TIMEOUT_SEC` | `pool.py:123-129` |
-| 풀 종료 드레인 | 5.0초(`STOP_DRAIN_TIMEOUT_SEC`) | 설정 불가(모듈 상수) | `pool.py:11`, `pool.py:65` |
+| 워커 획득 대기 | 60.0초 | `CLAUDE_POOL_ACQUIRE_TIMEOUT_SEC` | `pool.py:128-134` |
+| 풀 종료 드레인 | 5.0초(`STOP_DRAIN_TIMEOUT_SEC`) | 설정 불가(모듈 상수) | `pool.py:11`, `pool.py:70` |
 | 클라이언트 health 탐침 | 1.0초 | 인자 없음 | `client.py:52` |
 | 클라이언트 자동 기동 대기 | 15.0초, 0.2초 간격 | `start_timeout_sec` 인자 | `client.py:41`, `client.py:76-81` |
 | 클라이언트 기본 요청 소켓 타임아웃 | 30.0초 | `_call`의 `request_timeout` | `client.py:89` |
@@ -80,7 +83,16 @@ status: as-built
 
 ## 실측 근거
 
-- 기준 commit: `821f6e9c83edc2b2f11434cc00e52c106f6f7b42`
-- 확인한 소스: [config.py](../../../src/claude_pool/config.py), [pool.py](../../../src/claude_pool/pool.py), [worker.py](../../../src/claude_pool/worker.py), [server.py](../../../src/claude_pool/server.py), [jobs.py](../../../src/claude_pool/jobs.py), [runner.py](../../../src/claude_pool/runner.py), [client.py](../../../src/claude_pool/client.py), [daemon.py](../../../src/claude_pool/daemon.py), [winjob.py](../../../src/claude_pool/winjob.py), [daemon_ctl.py](../../../scripts/daemon_ctl.py), 조사 스크립트 2개, [test_integration.py](../../../tests/test_integration.py)
-- 확인 범위: 설정값과 적용 지점 정적 확인. 부하·성능 측정을 수행하지 않았다.
-- 미확인: 성능·가용성 목표, 실제 운영 설정값, 위 측정 항목의 수치, aiohttp 기본 제한값.
+절마다 기준 시점이 다르다.
+
+### 이번 갱신 기준 — `7cc905fc828abeb790f3e8d46de469e7021ed137`
+
+- 갱신한 절: 「워커 풀 확장」과 「타임아웃」의 풀 관련 행. 유휴 축소 기준 시간을 추가하고 `pool.py` 줄 번호를 이번 tree에서 다시 읽었다.
+- 확인한 소스: [pool.py](../../../src/claude_pool/pool.py)(`release`·`_scale_down_loop`), [config.py](../../../src/claude_pool/config.py)
+- 확인 범위: 설정값과 적용 지점 정적 확인. 유휴 축소를 실제 데몬에서 관찰하지 않았고 부하·성능 측정도 하지 않았다.
+
+### 이전 기준 — `821f6e9c83edc2b2f11434cc00e52c106f6f7b42`
+
+- 위에 적지 않은 나머지 절과 `pool.py`·`config.py` 외 파일의 줄 번호는 이 commit 기준이며 이번에 다시 확인하지 않았다.
+- 당시 확인한 소스: [worker.py](../../../src/claude_pool/worker.py), [server.py](../../../src/claude_pool/server.py), [jobs.py](../../../src/claude_pool/jobs.py), [runner.py](../../../src/claude_pool/runner.py), [client.py](../../../src/claude_pool/client.py), [daemon.py](../../../src/claude_pool/daemon.py), [winjob.py](../../../src/claude_pool/winjob.py), [daemon_ctl.py](../../../scripts/daemon_ctl.py), 조사 스크립트 2개, [test_integration.py](../../../tests/test_integration.py)
+- 미확인: 성능·가용성 목표, 실제 운영 설정값, 위 측정 항목의 수치, aiohttp 기본 제한값, 유휴 축소가 실제 환경에서 절약하는 자원량.

@@ -1,6 +1,6 @@
 ---
 description: 요청이 없는 동안 예열 워커를 0까지 줄이고, 데몬이 없을 때도 바로 쓸 수 있는 런처를 제공한다 — GitHub 이슈 #2
-status: approved
+status: implemented
 revision: 2
 plan: docs/plans/2026-09-18-idle-scale-to-zero/plan-index.md
 origin: brain

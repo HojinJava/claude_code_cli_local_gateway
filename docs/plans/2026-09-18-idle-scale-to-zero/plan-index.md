@@ -1,6 +1,5 @@
 ---
-status: in-progress
-implementation-base: ffeaeada3353f3defa8d61a4dfc422198c0d092f
+status: done
 spec: docs/spec/2026-09-18-spec-idle-scale-to-zero/2026-09-18-spec-idle-scale-to-zero.md
 spec-revision: 2
 acceptance-evidence: ./acceptance-evidence.md
@@ -58,3 +57,16 @@ acceptance-evidence: ./acceptance-evidence.md
 | `docs/plans/2026-09-18-idle-scale-to-zero/acceptance-evidence.md` | 수정 | [task-006](task-006-full-suite-and-static-checks.md) |
 
 전역 `~\.local\bin\claude-pool-ask.cmd`는 저장소 밖 파일이라 이 표에 넣지 않는다. 내용은 task-005가 README에 적는다.
+
+## Implementation Record
+
+- plan: `docs/plans/2026-09-18-idle-scale-to-zero/plan-index.md`
+- implementation base: `ffeaeada3353f3defa8d61a4dfc422198c0d092f`
+- implementation HEAD: `7cc905fc828abeb790f3e8d46de469e7021ed137` (branch `feat/2026-09-18-idle-scale-to-zero`, base branch `master`, owned worktree 없음)
+- 범위: `git diff ffeaeada3353f3defa8d61a4dfc422198c0d092f..7cc905fc828abeb790f3e8d46de469e7021ed137` — 21개 파일(`src/claude_pool/config.py`, `src/claude_pool/pool.py`, `scripts/ask.py`, `tests/` 5개, `README.md`, `CLAUDE.md`, `.gitattributes`, plan·spec 문서)
+- 검증: `python -m pytest -v` · cwd `.` · exit 0 · `159 passed`(스냅샷 7cc905f, 변경 전 기준선 146 passed). 정적 확인으로 테스트가 실제 `claude` CLI를 부르지 않음을 확인
+- 수용 기준: [acceptance-evidence.md](acceptance-evidence.md) — AC-001~AC-013 전부 `pass`, 미충족 없음
+- lessons: implementation HEAD에서 감사한 `Lesson-Required: false`, `Lesson-Outcome: not-applicable`, `Lesson-Ref` 없음
+- 상태: 완료. `task_limit` 없음, 완료한 `selected_tasks`는 task-001~task-006, `next_task` 없음
+- Deviation: spec revision 2 — AC-003의 재예열 범위를 현재 `release` 동작(반납 1건당 1개 보충)으로 정정했다. 사용자 확인 2026-09-18, 별도 ADR 없음
+- 변경 기록: 없음(정상 execute-dev 핸드오프)

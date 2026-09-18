@@ -39,10 +39,25 @@ status: as-built
 | `python scripts/daemon_ctl.py start` | 클라이언트 자동 기동 경로로 기동(이미 응답하면 기동하지 않음) 후 `status` 출력 | 코드 확인: `scripts/daemon_ctl.py:1-8`, `daemon_ctl.py:125-129` |
 | `python scripts/daemon_ctl.py status` (인자 없음도 동일) | `/health` 조회 결과와 검증된 pid 출력. 응답 없으면 종료 코드 1 | 코드 확인: `scripts/daemon_ctl.py:103-122`, `daemon_ctl.py:178-183` |
 | `CLAUDE_POOL_MODEL=haiku python scripts/daemon_ctl.py start` 형태의 환경변수 지정 | `daemon_ctl`이 `PoolConfig.from_env()`를 읽으므로 같은 변수로 대상 결정 | 코드 확인: `scripts/daemon_ctl.py:5-7`(docstring) |
+| `python scripts/ask.py "<프롬프트>"` | 인자를 공백으로 이어 프롬프트 1건을 만들고 `ClaudePoolClient().generate()`로 보낸 뒤 답을 stdout에 출력. 클라이언트 자동 기동 경로를 쓰므로 데몬이 없으면 띄운다. 빈 프롬프트는 usage + 종료 코드 2, `ClaudePoolError`는 `kind`·`retryable`(있으면 `retry_after_sec`)을 stderr에 출력 + 종료 코드 1 | 코드 확인: `scripts/ask.py:19-40`, docstring `scripts/ask.py:1-9` |
 | 다른 포트로 두 번째 데몬 | pid 파일이 포트별(`daemon-{port}.pid`)이라 공존 | 코드 확인: `src/claude_pool/daemon.py:16-23`. 명령 예시는 사용자 문서 기재 |
 
-- `python scripts/daemon_ctl.py`는 `claude_pool`을 import하므로 패키지 설치 후 실행을 전제한다(`scripts/daemon_ctl.py:17-19`).
+- `python scripts/daemon_ctl.py`는 `claude_pool`을 import하므로 패키지 설치 후 실행을 전제한다(`scripts/daemon_ctl.py:17-19`). `python scripts/ask.py`도 `claude_pool.client`를 import하므로 같은 전제다(`scripts/ask.py:14`).
 - 설정 키는 [03-configuration](03-configuration.md)을 본다.
+
+### 유휴 축소가 운영에서 뜻하는 것
+
+축소 루프는 마지막 반납 이후 `idle_scale_to_zero_sec`(코드 폴백 60.0초)가 지나고 배포된 워커가 하나도 없으면 idle 워커를 전부 종료한다(`src/claude_pool/pool.py:206-240`). 운영 관점의 귀결은 다음과 같다.
+
+| 관찰되는 상태 | 코드상 의미 |
+|---|---|
+| 한동안 안 쓴 데몬의 `/health`가 `total: 0`, `idle: 0` | 정상적인 휴지 상태다. `healthy`는 `idle_alive == len(_idle)`이므로 빈 풀에서 `True`다(`pool.py:251`, `pool.py:262`) |
+| 데몬 프로세스와 포트는 그대로 | 축소는 워커만 종료한다. `run_daemon`의 TCP 사이트·pid 파일은 건드리지 않는다(`daemon.py:26-39`) |
+| 축소 후 첫 요청이 예열 상태보다 느릴 수 있음 | 풀이 비어 있으면 `acquire`가 온디맨드 스폰을 예약하고 기다린다(`pool.py:154-155`, `pool.py:174-183`). 실제 지연 폭은 이번 실측에서 측정하지 않았다(`미확인`) |
+| 복구가 한 번에 `min_workers`까지 가지 않음 | 재예열은 `release`가 반납마다 1개씩 보충하는 경로뿐이다(`pool.py:199-204`). `start()`의 일괄 예열은 기동 시 1회만 돈다(`pool.py:45-49`) |
+| 항상 예열 상태를 유지하고 싶을 때 | `CLAUDE_POOL_IDLE_SCALE_TO_ZERO_SEC=0`이면 판정이 꺼지고 `min_workers` 하한이 유지된다(`pool.py:216-224`) |
+
+- `python scripts/ask.py`가 자동 기동에 의존하는 이유도 여기에 있다고 주석이 밝힌다: 유휴 데몬은 워커를 안 남기고, 멈춘 데몬은 포트도 안 남긴다(`scripts/ask.py:27-28`).
 
 ## 테스트 실행
 
@@ -74,7 +89,16 @@ status: as-built
 
 ## 실측 근거
 
-- 기준 commit: `821f6e9c83edc2b2f11434cc00e52c106f6f7b42`
-- 확인한 소스: [pyproject.toml](../../../pyproject.toml), [daemon.py](../../../src/claude_pool/daemon.py), [client.py](../../../src/claude_pool/client.py), [config.py](../../../src/claude_pool/config.py), [worker.py](../../../src/claude_pool/worker.py), [daemon_ctl.py](../../../scripts/daemon_ctl.py). 명령 출처 구분을 위해 `README.md`의 명령 줄만 검색했다(사실 근거로 사용하지 않음).
-- 확인 범위: 정적 읽기. 설치·데몬·스크립트·테스트를 실행하지 않았다.
-- 미확인: 명령의 실제 성공 여부, 대상 환경의 `claude` CLI 설치·로그인 상태, 비 Windows에서의 자동 기동 분리 동작.
+절마다 기준 시점이 다르다.
+
+### 이번 갱신 기준 — `7cc905fc828abeb790f3e8d46de469e7021ed137`
+
+- 갱신한 절: 「실행」 표의 `python scripts/ask.py` 행과 그 아래 전제 문장, 새로 추가한 「유휴 축소가 운영에서 뜻하는 것」.
+- 확인한 소스: [`scripts/ask.py`](../../../scripts/ask.py)(전체), [pool.py](../../../src/claude_pool/pool.py)(`start`·`acquire`·`release`·`_scale_down_loop`·`stats`), [config.py](../../../src/claude_pool/config.py)(`idle_scale_to_zero_sec`)
+- 확인 범위: 정적 읽기. 런처·데몬·테스트를 실행하지 않았다.
+
+### 이전 기준 — `821f6e9c83edc2b2f11434cc00e52c106f6f7b42`
+
+- 위에 적지 않은 나머지 절(「전제 조건」·「설치·빌드」·「실행」의 나머지 행·「테스트 실행」·「종료」·「복구 절차」)은 이 commit 기준이며 이번에 다시 확인하지 않았다.
+- 당시 확인한 소스: [pyproject.toml](../../../pyproject.toml), [daemon.py](../../../src/claude_pool/daemon.py), [client.py](../../../src/claude_pool/client.py), [config.py](../../../src/claude_pool/config.py), [worker.py](../../../src/claude_pool/worker.py), [daemon_ctl.py](../../../scripts/daemon_ctl.py). 명령 출처 구분을 위해 `README.md`의 명령 줄만 검색했다(사실 근거로 사용하지 않음).
+- 미확인: 명령의 실제 성공 여부, 대상 환경의 `claude` CLI 설치·로그인 상태, 비 Windows에서의 자동 기동 분리 동작, 축소 후 첫 요청의 실제 지연 폭.

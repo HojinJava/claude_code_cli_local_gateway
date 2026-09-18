@@ -73,7 +73,7 @@ sequenceDiagram
 
 ## 워커 획득
 
-`WorkerPool.acquire`(`pool.py:121-129`)가 `_acquire`(`pool.py:131-167`)를 `acquire_timeout_sec`로 감싼다. `_acquire`는 `_cond`를 잡고 반복한다.
+`WorkerPool.acquire`(`pool.py:126-134`)가 `_acquire`(`pool.py:136-172`)를 `acquire_timeout_sec`로 감싼다. `_acquire`는 `_cond`를 잡고 반복한다.
 
 ```mermaid
 flowchart TD
@@ -94,17 +94,42 @@ flowchart TD
     A -. "acquire_timeout_sec 초과" .-> X3["PoolUnavailableError: no worker available"]
 ```
 
-- `_grow_by_one`(`pool.py:169-178`)은 락 안에서 한도·종료를 재확인한 뒤 `_try_spawn_and_add_idle_locked`로 1개 스폰하고, `finally`에서 `_pending_grows`를 줄인다.
-- 스폰(`pool.py:83-90`): `Worker(config, job=self._job)` → `worker.start()`(`worker.py:48-62`: `create_subprocess_exec`, `CREATION_FLAGS`, Job Object 할당, `became_idle_at` 기록) → `_idle` 추가 → `_total += 1` → `_last_spawn_error = None` → `notify()`.
+- `_grow_by_one`(`pool.py:174-183`)은 락 안에서 한도·종료를 재확인한 뒤 `_try_spawn_and_add_idle_locked`로 1개 스폰하고, `finally`에서 `_pending_grows`를 줄인다.
+- 스폰(`pool.py:88-95`): `Worker(config, job=self._job)` → `worker.start()`(`worker.py:48-62`: `create_subprocess_exec`, `CREATION_FLAGS`, Job Object 할당, `became_idle_at` 기록) → `_idle` 추가 → `_total += 1` → `_last_spawn_error = None` → `notify()`.
 
 ## 워커 반납과 보충
 
-- `release_in_background(worker)`(`pool.py:180-183`)는 `release`를 `_background_tasks`에 추적되는 태스크로 실행한다.
-- `release(worker)`(`pool.py:185-198`): 무조건 `worker.kill()` → 락 안에서 `_total -= 1` → `_total < min_workers`이거나 (`_waiting > 0` 그리고 `_total < max_workers`)이고 종료 중이 아니면 `_try_spawn_and_add_idle_locked`로 1개 보충. 워커는 idle로 되돌아가지 않는다.
+- `release_in_background(worker)`(`pool.py:185-188`)는 `release`를 `_background_tasks`에 추적되는 태스크로 실행한다.
+- `release(worker)`(`pool.py:190-204`): 무조건 `worker.kill()` → 락 안에서 `_total -= 1`과 `_last_release_at = time.monotonic()` 기록(`pool.py:198`) → `_total < min_workers`이거나 (`_waiting > 0` 그리고 `_total < max_workers`)이고 종료 중이 아니면 `_try_spawn_and_add_idle_locked`로 1개 보충. 워커는 idle로 되돌아가지 않는다.
+- 유휴 판정의 기준 시각은 acquire가 아니라 이 반납 시각이다. 주석(`pool.py:36-39`)은 오래 걸리는 요청이 실행 중인 동안 유휴로 보이면 안 되기 때문이라고 적는다. 초기값은 `WorkerPool.__init__`에서 `time.monotonic()`이다(`pool.py:40`).
 
 ## idle 축소
 
-`_scale_down_loop`(`pool.py:200-222`): `scale_down_interval_sec`마다 락 안에서 `len(_idle) - min_workers`개까지, `became_idle_at`에서 `idle_timeout_sec`가 지난 idle 워커를 골라 `_idle`에서 뺀다 → 락 밖에서 워커마다 kill 후 락을 잡고 `_total -= 1`. `became_idle_at`은 `Worker.start()`에서만 기록된다(`worker.py:62`).
+`_scale_down_loop`(`pool.py:206-240`)는 `scale_down_interval_sec`마다 깨어나 락 안에서 종료 대상 수(`excess_allowed`)와 대상 판정을 정한 뒤, 락 밖에서 워커마다 kill하고 다시 락을 잡아 `_total -= 1`한다(`pool.py:235-240`). 규칙은 두 갈래다.
+
+```mermaid
+flowchart TD
+    A["scale_down_interval_sec 경과"] --> B{"idle_scale_to_zero_sec > 0<br/>AND _total == len(_idle)<br/>AND now - _last_release_at > idle_scale_to_zero_sec"}
+    B -- 예 (draining) --> C["excess_allowed = len(_idle)<br/>대상 조건 없이 idle 전부 종료"]
+    B -- 아니오 --> D["excess_allowed = max(0, len(_idle) - min_workers)<br/>became_idle_at 경과 > idle_timeout_sec 인 것만"]
+    C --> E["락 밖에서 kill, _total -= 1"]
+    D --> E
+```
+
+| 갈래 | 조건 | 하한 | 대상 선별 |
+|---|---|---|---|
+| 유휴 축소(드레인) | `idle_scale_to_zero_sec > 0`이고, 배포된 워커가 없고(`_total == len(_idle)`), 마지막 반납 이후 경과가 기준 시간 초과 (`pool.py:216-220`) | 없음(0까지) | `idle_timeout_sec`를 보지 않고 `_idle` 전부 (`pool.py:221-231`) |
+| 초과분 축소 | 그 밖의 경우 | `min_workers` | `became_idle_at` 경과가 `idle_timeout_sec` 초과인 것만 (`pool.py:223`, `pool.py:229`) |
+
+- `_total == len(_idle)` 조건 때문에 대여 중 워커가 하나라도 있으면 드레인이 발동하지 않는다. `/generate`와 `/jobs`가 같은 `runner.execute`를 거쳐 워커를 빌리므로, 실행 중 백그라운드 job도 이 조건에 걸린다(주석 `pool.py:214-215`).
+- `became_idle_at`은 `Worker.start()`에서만 기록된다(`worker.py:62`).
+
+### 드레인 이후
+
+1. 축소 후 풀은 `_total == 0`, `_idle == 0`이다. 데몬·포트·`JobStore`는 그대로다.
+2. 다음 요청의 `acquire`는 idle이 없으므로 `_schedule_grow()`로 온디맨드 스폰을 예약하고 `_cond`에서 기다린다(`pool.py:154-155`, `pool.py:157-159`).
+3. 그 요청이 끝나고 `release`가 돌면 `_total(0) < min_workers`이므로 1개를 보충한다(`pool.py:199-204`). 즉 재예열은 반납 1회당 1개씩이며, `start()`의 일괄 예열(`pool.py:45-49`)은 기동 때만 돈다.
+4. `idle_scale_to_zero_sec`가 `0` 이하이면 `draining`이 항상 거짓이라 기존 초과분 축소만 남는다(`pool.py:217`).
 
 ## 데몬 기동 순서
 
@@ -135,7 +160,16 @@ flowchart LR
 
 ## 실측 근거
 
-- 기준 commit: `821f6e9c83edc2b2f11434cc00e52c106f6f7b42`
-- 확인한 소스: [server.py](../../../src/claude_pool/server.py), [runner.py](../../../src/claude_pool/runner.py), [jobs.py](../../../src/claude_pool/jobs.py), [pool.py](../../../src/claude_pool/pool.py), [worker.py](../../../src/claude_pool/worker.py), [winjob.py](../../../src/claude_pool/winjob.py), [daemon.py](../../../src/claude_pool/daemon.py)
-- 확인 범위: 제어 흐름 정적 추적. 동시성 경합·취소 타이밍을 실행으로 관찰하지 않았다.
-- 미확인: aiohttp가 클라이언트 연결 끊김 시 핸들러 태스크를 취소하는 조건(프레임워크 버전·설정 의존), 신호 미지원 플랫폼에서 종료 시 `finally`가 실행되는 범위.
+절마다 기준 시점이 다르다.
+
+### 이번 갱신 기준 — `7cc905fc828abeb790f3e8d46de469e7021ed137`
+
+- 갱신한 절: 「워커 획득」·「워커 반납과 보충」의 `pool.py` 줄 번호와 `_last_release_at` 기록, 「idle 축소」 전체(두 갈래 규칙 표·흐름도·「드레인 이후」).
+- 확인한 소스: [pool.py](../../../src/claude_pool/pool.py)(전체), [worker.py](../../../src/claude_pool/worker.py)(`start`의 `became_idle_at`)
+- 확인 범위: 제어 흐름 정적 추적. 축소 루프를 실행해 타이밍을 관찰하지 않았다.
+
+### 이전 기준 — `821f6e9c83edc2b2f11434cc00e52c106f6f7b42`
+
+- 위에 적지 않은 나머지 절(「미들웨어 파이프라인」·「동기 경로」·「백그라운드 경로」·「데몬 기동 순서」·「데몬 종료 순서」)은 이 commit 기준이며 이번에 다시 확인하지 않았다.
+- 당시 확인한 소스: [server.py](../../../src/claude_pool/server.py), [runner.py](../../../src/claude_pool/runner.py), [jobs.py](../../../src/claude_pool/jobs.py), [pool.py](../../../src/claude_pool/pool.py), [worker.py](../../../src/claude_pool/worker.py), [winjob.py](../../../src/claude_pool/winjob.py), [daemon.py](../../../src/claude_pool/daemon.py)
+- 미확인: aiohttp가 클라이언트 연결 끊김 시 핸들러 태스크를 취소하는 조건(프레임워크 버전·설정 의존), 신호 미지원 플랫폼에서 종료 시 `finally`가 실행되는 범위, 드레인 발동·재예열의 실제 타이밍.

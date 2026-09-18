@@ -8,6 +8,7 @@
 | 문서 영역 | 역할 | 먼저 읽을 시작점 |
 |---|---|---|
 | `docs/architecture/` | 사전 설계와 사후 구현 구조·계약·운영 문서 | [docs/architecture/architecture.md](<docs/architecture/architecture.md>) |
+| `docs/plans/` | 구현 계획과 task | [docs/plans/plans-index.md](<docs/plans/plans-index.md>) |
 | `docs/spec/` | 기능 요구사항·설계 spec | [docs/spec/spec-index.md](<docs/spec/spec-index.md>) |
 
 `docs/` 루트 문서: [docs/product.md](<docs/product.md>)
