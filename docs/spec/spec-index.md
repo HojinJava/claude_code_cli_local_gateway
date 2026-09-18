@@ -11,7 +11,7 @@ tags: [spec]
 | [HTTP 게이트웨이 데몬 API](2026-09-17-spec-gateway-api/2026-09-17-spec-gateway-api.md) | implemented | 1 | migration | 없음 | `server.py`, `runner.py`, `jobs.py`, `errors.py`, `apidocs.py`, `config.py`, `daemon.py` — 라우트 계약, Host 가드, 실패 분류, 백그라운드 job, 자기 문서, 데몬 조립 |
 | [클라이언트와 운영·조사 스크립트](2026-09-17-spec-client-ops/2026-09-17-spec-client-ops.md) | implemented | 1 | migration | 없음 | `client.py`, `scripts/daemon_ctl.py`, `scripts/bench_cold_vs_warm.py`, `scripts/investigate_stream_json_timeout.py` |
 | [구조화된 값으로 워커 실패 분류하기](2026-09-17-spec-structured-failure-classification/2026-09-17-spec-structured-failure-classification.md) | approved | 1 | brain | [plan](../plans/2026-09-17-structured-failure-classification/plan-index.md) | 이슈 #1 — `result.api_error_status`·`assistant.error`로 `rate_limited`·`not_authenticated`·`worker_failed` 분류, 문구 정규식 제거. 선행: gateway-api spec |
-| [유휴 시 워커를 0까지 줄이기](2026-09-18-spec-idle-scale-to-zero/2026-09-18-spec-idle-scale-to-zero.md) | approved | 1 | brain | 없음 | 이슈 #2 — 유휴 지속 시 idle 워커를 `min_workers` 아래 0까지 축소(기본 60초), 데몬은 유지. 런처 `scripts/ask.py` 추가 |
+| [유휴 시 워커를 0까지 줄이기](2026-09-18-spec-idle-scale-to-zero/2026-09-18-spec-idle-scale-to-zero.md) | approved | 1 | brain | [plan](../plans/2026-09-18-idle-scale-to-zero/plan-index.md) | 이슈 #2 — 유휴 지속 시 idle 워커를 `min_workers` 아래 0까지 축소(기본 60초), 데몬은 유지. 런처 `scripts/ask.py` 추가 |
 
 migration spec 3개는 plan이 없으며, 변경하려면 `brain`에서 요구를 다시 구체화해야 make-plans의 계획 대상이 된다. 관련 구조 문서는 [architecture.md](../architecture/architecture.md)에서 찾는다.
 
