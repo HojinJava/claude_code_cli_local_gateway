@@ -24,3 +24,18 @@ status: design
 | `CLAUDE.md`, `README.md` | 새 판정 설명 |
 
 배치 원칙: 구현은 `src/claude_pool/`, 검증은 `tests/`, 가짜 CLI는 `tests/fixtures/`에 둔다(기존 배치).
+
+## 이슈 #2 — 유휴 축소가 책임을 바꾸는 예정 경로
+
+- 근거 spec: [유휴 시 워커를 0까지 줄이기](../../spec/2026-09-18-spec-idle-scale-to-zero/2026-09-18-spec-idle-scale-to-zero.md)
+- 디렉터리 구성은 유지한다. 새 파일은 런처 하나뿐이다.
+
+| 경로 | 변경 종류 | 예정 책임 |
+|---|---|---|
+| `src/claude_pool/config.py` | 수정 | 유휴 축소 기준 시간 설정 추가 |
+| `src/claude_pool/pool.py` | 수정 | 마지막 반납 시각 기록, 유휴 조건에서 idle 전부 종료 |
+| `scripts/ask.py` | 생성 | 데몬 자동 기동 + 프롬프트 1건 전송 런처 |
+| `tests/test_pool.py`, `tests/test_integration.py` | 수정 | 0까지 축소·비축소·재예열 검증 |
+| `README.md`, `CLAUDE.md` | 수정 | 정책·런처 안내 |
+
+전역 `claude-pool-ask.cmd`는 저장소 밖(`~/.local/bin`)에 두므로 이 구조에 포함하지 않는다.

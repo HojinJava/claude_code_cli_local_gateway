@@ -36,3 +36,11 @@ def classify_result(api_error_status: int | None, error: str | None) -> Failure:
         return NOT_AUTHENTICATED
     return WORKER_FAILED
 ```
+
+## 이슈 #2 — 축소 판정의 위치
+
+- 근거 spec: [유휴 시 워커를 0까지 줄이기](../../spec/2026-09-18-spec-idle-scale-to-zero/2026-09-18-spec-idle-scale-to-zero.md)
+- 판정은 **`WorkerPool` 안**에 둔다. 데몬·서버·`runner`는 이 규칙을 몰라도 된다. 풀이 이미 idle 목록·배포 수·조건 변수를 모두 쥐고 있어서, 다른 계층으로 빼면 상태를 밖으로 노출해야 한다.
+- 마지막 반납 시각은 풀의 비공개 필드로 두고 `release` 경로에서 갱신한다. 새 공개 API를 만들지 않는다.
+- 축소는 기존 루프를 **확장**한다. 새 태스크·새 타이머를 만들지 않는다. 종료해야 할 워커 수를 정하는 계산만 조건에 따라 달라진다.
+- 런처는 기존 `ClaudePoolClient`를 그대로 쓴다. HTTP 호출을 새로 구현하지 않는다.

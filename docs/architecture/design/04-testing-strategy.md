@@ -32,3 +32,21 @@ status: design
 | AC-015 | 서브프로세스 단위 | 가짜 CLI 출력 줄 순서·필드 확인 |
 | AC-016 | 전체 | `pytest -v` |
 | AC-017 | 수동 | 임시 포트 데몬에 실제 CLI로 `POST /generate` 1건 |
+
+## 이슈 #2 — 유휴 축소 검증
+
+- 근거 spec: [유휴 시 워커를 0까지 줄이기](../../spec/2026-09-18-spec-idle-scale-to-zero/2026-09-18-spec-idle-scale-to-zero.md)
+- 실제 `claude` CLI·실제 데몬을 쓰지 않는다. 가짜 CLI와 인프로세스 앱으로 검증한다.
+
+| AC | 방법 |
+|---|---|
+| AC-001, AC-003, AC-006 | 짧은 기준 시간·짧은 축소 주기로 풀을 만들고 `stats()`의 `idle`·`total` 변화를 확인 |
+| AC-002 | 축소 후 `POST /generate`가 200을 돌려주는지 인프로세스 앱으로 확인 |
+| AC-004, AC-005 | 느린 가짜 CLI(`--fake-delay-sec`)로 처리 중 상태를 만들고 그 사이 축소가 없음을 확인. job 경로도 같은 방식 |
+| AC-007 | `PoolConfig.from_env` 파라미터 테스트 |
+| AC-008 | 축소 후 `/health`의 `healthy`·`last_error` 확인 |
+| AC-009, AC-010 | 런처를 부분 검증한다. 실제 데몬을 띄우지 않도록 클라이언트를 monkeypatch해 성공·실패 경로의 출력과 종료 코드를 확인 |
+| AC-011 | 문서 정적 대조 |
+| AC-013 | `pytest -v` |
+
+타이밍에 기대는 테스트는 기존 축소 테스트와 같은 방식(짧은 주기 + `asyncio.sleep`)을 따르되, 가능하면 시각 값을 직접 조작해 대기 시간을 줄인다.

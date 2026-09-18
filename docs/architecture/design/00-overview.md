@@ -28,3 +28,10 @@ flowchart LR
 ```
 
 상세 분류 규칙과 경계는 [13-error-policy](13-error-policy.md)에 있다.
+
+## 이슈 #2 — 유휴 시 워커 0까지 축소
+
+- 근거 spec: [유휴 시 워커를 0까지 줄이기](../../spec/2026-09-18-spec-idle-scale-to-zero/2026-09-18-spec-idle-scale-to-zero.md)
+- 적용 영역: `WorkerPool`의 축소 루프와 `PoolConfig`. 시스템 경계는 바뀌지 않는다. 데몬·포트·라우트는 그대로이고, 유휴일 때 워커 프로세스만 0이 된다.
+- 목표 흐름: 축소 루프가 유휴 조건을 확인 → idle 워커 전부 종료 → 다음 요청에서 온디맨드 스폰 → 처리 후 `min_workers`까지 복구. 상세는 [15-non-functional-requirements](15-non-functional-requirements.md)에 있다.
+- 새 진입점으로 런처 `scripts/ask.py`가 추가된다. 데몬이 없으면 띄우고 프롬프트 1건을 보내는 용도이며, HTTP 계약은 그대로 쓴다.
