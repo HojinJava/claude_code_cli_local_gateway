@@ -25,6 +25,20 @@ def test_from_env_reads_overrides(monkeypatch):
     assert config.claude_cmd == ["python", "fake.py"]
 
 
+def test_idle_scale_to_zero_defaults_to_a_minute():
+    assert PoolConfig().idle_scale_to_zero_sec == 60.0
+
+
+def test_idle_scale_to_zero_is_read_from_the_environment(monkeypatch):
+    monkeypatch.setenv("CLAUDE_POOL_IDLE_SCALE_TO_ZERO_SEC", "300")
+    assert PoolConfig.from_env().idle_scale_to_zero_sec == 300.0
+
+
+def test_idle_scale_to_zero_can_be_disabled_with_zero(monkeypatch):
+    monkeypatch.setenv("CLAUDE_POOL_IDLE_SCALE_TO_ZERO_SEC", "0")
+    assert PoolConfig.from_env().idle_scale_to_zero_sec == 0.0
+
+
 @pytest.mark.parametrize("host", ["127.0.0.1", "127.0.0.2", "localhost", "::1"])
 def test_loopback_hosts_are_accepted(host):
     assert PoolConfig(host=host).host == host

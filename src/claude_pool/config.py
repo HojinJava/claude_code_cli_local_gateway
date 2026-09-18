@@ -29,6 +29,11 @@ class PoolConfig:
     acquire_timeout_sec: float = 60.0
     idle_timeout_sec: float = 60.0
     scale_down_interval_sec: float = 30.0
+    # Pre-warmed workers cost memory and CPU while they wait, so a pool that
+    # nobody has used for this long drops below min_workers all the way to
+    # zero. The daemon stays up and re-spawns on the next request. 0 disables
+    # it, which restores the old floor of min_workers.
+    idle_scale_to_zero_sec: float = 60.0
     # Background jobs: how long a finished job stays readable, and a hard cap
     # so a caller that never collects results cannot grow the store forever.
     job_retention_sec: float = 600.0
@@ -91,6 +96,9 @@ class PoolConfig:
             idle_timeout_sec=float(os.environ.get("CLAUDE_POOL_IDLE_TIMEOUT_SEC", 60.0)),
             scale_down_interval_sec=float(
                 os.environ.get("CLAUDE_POOL_SCALE_DOWN_INTERVAL_SEC", 30.0)
+            ),
+            idle_scale_to_zero_sec=float(
+                os.environ.get("CLAUDE_POOL_IDLE_SCALE_TO_ZERO_SEC", 60.0)
             ),
             job_retention_sec=float(
                 os.environ.get("CLAUDE_POOL_JOB_RETENTION_SEC", 600.0)

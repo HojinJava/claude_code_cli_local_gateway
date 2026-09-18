@@ -86,3 +86,36 @@ async def test_burst_scales_up_and_idle_scales_back_down(aiohttp_client, tmp_pat
     await asyncio.sleep(0.6)  # past idle_timeout_sec + scale_down_interval_sec
     assert pool.stats()["total"] == config.min_workers
     assert pool.stats()["idle"] == config.min_workers
+
+
+async def test_a_drained_pool_still_answers_and_reports_itself_healthy(
+    aiohttp_client, tmp_path, make_pool
+):
+    # The resting state of an unused daemon: no workers, port still open.
+    config = PoolConfig(
+        min_workers=2,
+        max_workers=4,
+        scratch_dir=tmp_path,
+        claude_cmd=[sys.executable, str(FAKE_CLI), "--fake-mode", "echo"],
+        idle_scale_to_zero_sec=0.15,
+        idle_timeout_sec=10.0,
+        scale_down_interval_sec=0.05,
+    )
+    pool = make_pool(config)
+    await pool.start()
+    client = await aiohttp_client(create_app(pool))
+
+    await asyncio.sleep(0.4)
+    drained = await (await client.get("/health")).json()
+    assert drained["idle"] == 0
+    assert drained["total"] == 0
+    assert drained["healthy"] is True
+    assert drained["last_error"] is None
+
+    resp = await client.post("/generate", json={"prompt": "still there?"})
+    assert resp.status == 200
+    assert (await resp.json())["text"] == "still there?"
+
+    # Re-warming is gradual: one release tops the pool up by one worker.
+    after = await (await client.get("/health")).json()
+    assert after["total"] == 1

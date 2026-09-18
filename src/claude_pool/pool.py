@@ -33,6 +33,11 @@ class WorkerPool:
         # instead of only how many workers it has counted.
         self._last_error: str | None = None
         self._pending_grows = 0
+        # When a worker last came back. Pre-warmed workers cost memory and CPU
+        # while they wait, so a pool nobody has used since then drains to zero
+        # (see _scale_down_loop). Release, not acquire, is the mark: a long
+        # request must not look like idleness while it runs.
+        self._last_release_at = time.monotonic()
         self._scale_down_task: asyncio.Task | None = None
         self._background_tasks: set[asyncio.Task] = set()
         self._stopped = False
@@ -190,6 +195,7 @@ class WorkerPool:
         await worker.kill()
         async with self._cond:
             self._total -= 1
+            self._last_release_at = time.monotonic()
             below_min = self._total < self.config.min_workers
             queued_demand = self._waiting > 0 and self._total < self.config.max_workers
             if (below_min or queued_demand) and not self._stopped:
@@ -202,13 +208,25 @@ class WorkerPool:
             await asyncio.sleep(self.config.scale_down_interval_sec)
             async with self._cond:
                 now = time.monotonic()
-                excess_allowed = max(0, len(self._idle) - self.config.min_workers)
+                # Nothing has used the pool for long enough: give the machine
+                # its memory and CPU back by dropping below min_workers to
+                # zero. The daemon stays up, so the next request just spawns.
+                # Workers that are out are never touched, so a request in
+                # flight — including a background job — holds the drain off.
+                draining = (
+                    self.config.idle_scale_to_zero_sec > 0
+                    and self._total == len(self._idle)
+                    and (now - self._last_release_at) > self.config.idle_scale_to_zero_sec
+                )
+                excess_allowed = (
+                    len(self._idle) if draining
+                    else max(0, len(self._idle) - self.config.min_workers)
+                )
                 survivors: deque[Worker] = deque()
                 to_kill: list[Worker] = []
                 for w in self._idle:
-                    if (
-                        len(to_kill) < excess_allowed
-                        and (now - w.became_idle_at) > self.config.idle_timeout_sec
+                    if len(to_kill) < excess_allowed and (
+                        draining or (now - w.became_idle_at) > self.config.idle_timeout_sec
                     ):
                         to_kill.append(w)
                     else:
