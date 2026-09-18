@@ -53,7 +53,9 @@ async def execute(pool: WorkerPool, prompt: str, timeout_sec: float) -> Outcome:
             "worker timed out", Failure("timeout", 504, retryable=True)
         ))
     except WorkerError as exc:
-        return _note(pool, Outcome.failed(str(exc), classify(str(exc))))
+        # No result line survived, so there is nothing structured to classify
+        # by; the text travels on for a human but does not decide the kind.
+        return _note(pool, Outcome.failed(str(exc), classify()))
     finally:
         # Detached and shielded so that cancelling this call (client
         # disconnect, job cancellation, shutdown) still runs the release —
@@ -62,7 +64,9 @@ async def execute(pool: WorkerPool, prompt: str, timeout_sec: float) -> Outcome:
 
     if result["is_error"]:
         return _note(pool, Outcome.failed(
-            result["text"], classify(result["text"]), result["duration_ms"]
+            result["text"],
+            classify(result["api_error_status"], result["api_error_code"]),
+            result["duration_ms"],
         ))
     return _note(pool, Outcome.ok(result["text"], result["duration_ms"]))
 

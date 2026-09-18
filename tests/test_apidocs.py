@@ -93,20 +93,30 @@ async def test_docs_endpoints_are_behind_the_host_guard(client):
 
 
 @pytest.mark.parametrize(
-    "text,kind",
+    "status,code,kind",
     [
-        ("usage limit reached", "rate_limited"),
-        ("please run /login", "not_authenticated"),
-        ("boom", "worker_failed"),
+        (429, "", "rate_limited"),
+        (401, "", "not_authenticated"),
+        (None, "authentication_failed", "not_authenticated"),
+        (500, "", "worker_failed"),
+        (None, "", "worker_failed"),
     ],
 )
-def test_documented_failures_match_what_the_classifier_actually_returns(text, kind):
+def test_documented_failures_match_what_the_classifier_actually_returns(status, code, kind):
     # Guards against the docs drifting away from errors.classify.
     documented = {f["kind"]: f for f in FAILURE_KINDS}
-    failure = classify(text)
+    failure = classify(api_error_status=status, api_error_code=code)
     assert failure.kind == kind
     assert failure.status == documented[kind]["status"]
     assert failure.retryable is documented[kind]["retryable"]
+
+
+def test_documented_meanings_name_the_structured_values_they_rest_on():
+    # The docs must say what a kind is decided by, not just what it feels
+    # like, or a caller cannot tell an exact verdict from a guess.
+    documented = {f["kind"]: f["meaning"] for f in FAILURE_KINDS}
+    assert "api_error_status" in documented["rate_limited"]
+    assert "api_error_status" in documented["not_authenticated"]
 
 
 def test_every_documented_kind_is_unique():

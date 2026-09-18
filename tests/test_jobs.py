@@ -64,6 +64,7 @@ async def test_a_failed_run_lands_on_the_job_with_its_classification(
             tmp_path,
             claude_cmd=[
                 sys.executable, str(FAKE_CLI), "--fake-mode", "error",
+                "--fake-api-error-status", "429",
                 "--fake-error-text", "usage limit reached",
             ],
         )
@@ -181,7 +182,8 @@ async def test_querying_a_failed_job_still_returns_200(aiohttp_client, tmp_path,
     pool = make_pool(
         make_config(
             tmp_path,
-            claude_cmd=[sys.executable, str(FAKE_CLI), "--fake-mode", "crash",
+            claude_cmd=[sys.executable, str(FAKE_CLI), "--fake-mode", "error",
+                        "--fake-api-error-code", "authentication_failed",
                         "--fake-error-text", "please run /login"],
         )
     )
